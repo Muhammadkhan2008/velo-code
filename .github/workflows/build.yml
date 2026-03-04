@@ -1,4 +1,4 @@
-name: Multi-Platform Build
+name: IDE Multi-Platform Build
 
 on:
   workflow_dispatch:
@@ -30,7 +30,7 @@ jobs:
       - name: Upload Web Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: velo-web-dist
+          name: velo-ide-web-dist
           path: dist
           if-no-files-found: error
 
@@ -44,17 +44,17 @@ jobs:
           - os: windows-latest
             os_name: Windows
             build_cmd: npm run desktop:build:win
-            artifact_name: velo-windows-exe
+            artifact_name: velo-ide-windows-exe
             artifact_path: release/*.exe
           - os: ubuntu-latest
             os_name: Linux
             build_cmd: npm run desktop:build:linux
-            artifact_name: velo-linux-appimage
+            artifact_name: velo-ide-linux-appimage
             artifact_path: release/*.AppImage
           - os: macos-latest
             os_name: macOS
             build_cmd: npm run desktop:build:mac
-            artifact_name: velo-macos-dmg
+            artifact_name: velo-ide-macos-dmg
             artifact_path: release/*.dmg
 
     env:
@@ -132,7 +132,7 @@ jobs:
       - name: Upload Android APK
         uses: actions/upload-artifact@v4
         with:
-          name: velo-android-apk
+          name: velo-ide-android-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
 
@@ -179,6 +179,6 @@ jobs:
       - name: Upload iOS Simulator App
         uses: actions/upload-artifact@v4
         with:
-          name: velo-ios-simulator-app
+          name: velo-ide-ios-simulator-app
           path: ios/build/Build/Products/Debug-iphonesimulator/App.app
           if-no-files-found: error

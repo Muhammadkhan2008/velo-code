@@ -3,10 +3,10 @@ const path = require('path');
 
 function createMainWindow() {
   const win = new BrowserWindow({
-    width: 1280,
-    height: 800,
-    minWidth: 980,
-    minHeight: 680,
+    width: 1440,
+    height: 900,
+    minWidth: 1024,
+    minHeight: 700,
     autoHideMenuBar: true,
     webPreferences: {
       contextIsolation: true,

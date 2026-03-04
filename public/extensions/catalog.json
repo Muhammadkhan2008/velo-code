@@ -1,0 +1,118 @@
+﻿[
+    {
+        "id":  "runner-core",
+        "path":  "/extensions/runner-core.js"
+    },
+    {
+        "id":  "runner-html-preview",
+        "path":  "/extensions/runner-html-preview.js"
+    },
+    {
+        "id":  "runner-css-preview",
+        "path":  "/extensions/runner-css-preview.js"
+    },
+    {
+        "id":  "runner-javascript-browser",
+        "path":  "/extensions/runner-javascript-browser.js"
+    },
+    {
+        "id":  "runner-typescript-lite",
+        "path":  "/extensions/runner-typescript-lite.js"
+    },
+    {
+        "id":  "runner-python-pyodide",
+        "path":  "/extensions/runner-python-pyodide.js"
+    },
+    {
+        "id":  "runner-json-validator",
+        "path":  "/extensions/runner-json-validator.js"
+    },
+    {
+        "id":  "runner-markdown-preview",
+        "path":  "/extensions/runner-markdown-preview.js"
+    },
+    {
+        "id":  "runner-yaml-check",
+        "path":  "/extensions/runner-yaml-check.js"
+    },
+    {
+        "id":  "runner-xml-check",
+        "path":  "/extensions/runner-xml-check.js"
+    },
+    {
+        "id":  "runner-sql-analyzer",
+        "path":  "/extensions/runner-sql-analyzer.js"
+    },
+    {
+        "id":  "runner-java",
+        "path":  "/extensions/runner-java.js"
+    },
+    {
+        "id":  "runner-cpp",
+        "path":  "/extensions/runner-cpp.js"
+    },
+    {
+        "id":  "runner-go",
+        "path":  "/extensions/runner-go.js"
+    },
+    {
+        "id":  "runner-rust",
+        "path":  "/extensions/runner-rust.js"
+    },
+    {
+        "id":  "runner-swift",
+        "path":  "/extensions/runner-swift.js"
+    },
+    {
+        "id":  "runner-php",
+        "path":  "/extensions/runner-php.js"
+    },
+    {
+        "id":  "runner-ruby",
+        "path":  "/extensions/runner-ruby.js"
+    },
+    {
+        "id":  "runner-shell",
+        "path":  "/extensions/runner-shell.js"
+    },
+    {
+        "id":  "theme-vscode-dark",
+        "path":  "/extensions/theme-vscode-dark.js"
+    },
+    {
+        "id":  "theme-vscode-light",
+        "path":  "/extensions/theme-vscode-light.js"
+    },
+    {
+        "id":  "theme-oceanic",
+        "path":  "/extensions/theme-oceanic.js"
+    },
+    {
+        "id":  "ai-agent",
+        "path":  "/extensions/ai-agent.js"
+    },
+    {
+        "id":  "ai-chat-assistant",
+        "path":  "/extensions/ai-chat-assistant.js"
+    },
+    {
+        "id":  "ai-gemini-assistant",
+        "path":  "/extensions/ai-gemini-assistant.js"
+    },
+    {
+        "id":  "ai-chatgpt-assistant",
+        "path":  "/extensions/ai-chatgpt-assistant.js"
+    },
+    {
+        "id":  "terminal-tools",
+        "path":  "/extensions/terminal-tools.js"
+    },
+    {
+        "id":  "workspace-importer",
+        "path":  "/extensions/workspace-importer.js"
+    },
+    {
+        "id":  "command-pack",
+        "path":  "/extensions/command-pack.js"
+    }
+]

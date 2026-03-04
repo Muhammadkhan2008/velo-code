@@ -2,22 +2,39 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#16161a" />
-    <link rel="apple-touch-icon" href="/pwa-icons/apple-touch-icon.png" />
-    <title>Velo Code | Browser-Based IDE with AI, Terminal, and Extension Runners</title>
-    <meta
-      name="description"
-      content="Velo Code is a browser-based, mobile-friendly IDE with project workspaces, multi-tab editing, extension-driven run architecture, AI tools, and PWA support."
-    />
-    <meta
-      name="keywords"
-      content="browser based IDE, mobile friendly IDE, project workspace code editor, AI coding assistant IDE, extension driven code runner, Pyodide Python runner, web terminal IDE, PWA code editor, multi tab online editor, developer documentation IDE"
-    />
-    <link rel="icon" type="image/png" href="/1.jpg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="theme-color" content="#0d1117" />
+    <link rel="icon" type="image/jpeg" href="/1.jpg?v=velo8" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=velo8" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png?v=velo8" />
+    <link rel="shortcut icon" href="/favicon.ico?v=velo8" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=velo8" />
+    <link rel="manifest" href="/manifest.json" />
+    <title>VElo Code</title>
+    <script src="https://cdn.jsdelivr.net/pyodide/v0.25.0/full/pyodide.js"></script>
   </head>
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', async () => {
+          const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+          if (isLocalhost) {
+            const regs = await navigator.serviceWorker.getRegistrations();
+            await Promise.all(regs.map(reg => reg.unregister()));
+            if ('caches' in window) {
+              const keys = await caches.keys();
+              await Promise.all(keys.map((key) => caches.delete(key)));
+            }
+            return;
+          }
+
+          navigator.serviceWorker.register('/sw.js')
+            .then(() => console.log('SW registered'))
+            .catch(err => console.log('SW failed', err));
+        });
+      }
+    </script>
   </body>
 </html>

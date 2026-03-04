@@ -1,8 +1,8 @@
 import type {CapacitorConfig} from '@capacitor/cli';
 
 const config: CapacitorConfig = {
-  appId: 'com.velocode.app',
-  appName: 'Velo Code',
+  appId: 'com.velocode.ide',
+  appName: 'Velo Code IDE',
   webDir: 'dist',
   bundledWebRuntime: false,
 };
