@@ -1,4 +1,4 @@
-name: IDE Multi-Platform Build
+name: Android APK Build
 
 on:
   workflow_dispatch:
@@ -9,82 +9,6 @@ permissions:
   contents: read
 
 jobs:
-  web-build:
-    name: Web Dist Artifact
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Install Dependencies
-        run: npm install
-
-      - name: Build Web
-        run: npm run build
-
-      - name: Upload Web Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: velo-ide-web-dist
-          path: dist
-          if-no-files-found: error
-
-  desktop-build:
-    name: Desktop Build (${{ matrix.os_name }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            os_name: Windows
-            build_cmd: npm run desktop:build:win
-            artifact_name: velo-ide-windows-exe
-            artifact_path: release/*.exe
-          - os: ubuntu-latest
-            os_name: Linux
-            build_cmd: npm run desktop:build:linux
-            artifact_name: velo-ide-linux-appimage
-            artifact_path: release/*.AppImage
-          - os: macos-latest
-            os_name: macOS
-            build_cmd: npm run desktop:build:mac
-            artifact_name: velo-ide-macos-dmg
-            artifact_path: release/*.dmg
-
-    env:
-      CSC_IDENTITY_AUTO_DISCOVERY: "false"
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Install Dependencies
-        run: npm install
-
-      - name: Build Web
-        run: npm run build
-
-      - name: Build Desktop Package
-        run: ${{ matrix.build_cmd }}
-
-      - name: Upload Desktop Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact_name }}
-          path: ${{ matrix.artifact_path }}
-          if-no-files-found: error
-
   android-build:
     name: Android APK Artifact
     runs-on: ubuntu-latest
@@ -116,11 +40,14 @@ jobs:
         shell: bash
         run: |
           if [ ! -d "android" ]; then
-            npm run cap:add:android
+            npx cap add android
           fi
 
       - name: Sync Capacitor Android
-        run: npm run cap:sync:android
+        run: npx cap sync android
+
+      - name: Patch Android Project (proot jniLibs packaging)
+        run: node scripts/patch-android.mjs
 
       - name: Build Android Debug APK
         working-directory: android
@@ -134,51 +61,4 @@ jobs:
         with:
           name: velo-ide-android-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: error
-
-  ios-build:
-    name: iOS Simulator Artifact
-    runs-on: macos-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Install Dependencies
-        run: npm install
-
-      - name: Build Web
-        run: npm run build
-
-      - name: Add iOS Platform
-        shell: bash
-        run: |
-          if [ ! -d "ios" ]; then
-            npm run cap:add:ios
-          fi
-
-      - name: Sync Capacitor iOS
-        run: npm run cap:sync:ios
-
-      - name: Build iOS App (Unsigned Simulator)
-        shell: bash
-        run: |
-          xcodebuild \
-            -workspace ios/App/App.xcworkspace \
-            -scheme App \
-            -configuration Debug \
-            -sdk iphonesimulator \
-            -destination 'generic/platform=iOS Simulator' \
-            -derivedDataPath ios/build \
-            CODE_SIGNING_ALLOWED=NO
-
-      - name: Upload iOS Simulator App
-        uses: actions/upload-artifact@v4
-        with:
-          name: velo-ide-ios-simulator-app
-          path: ios/build/Build/Products/Debug-iphonesimulator/App.app
           if-no-files-found: error
