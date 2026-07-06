@@ -64,6 +64,7 @@ import { Project, File } from './types';
 import { cn } from './lib/utils';
 import { EditorView } from '@codemirror/view';
 import { vscodeLight } from '@uiw/codemirror-theme-vscode';
+import { Capacitor } from '@capacitor/core';
 import { runInBrowser } from './extensions/browserRunners';
 import { EXTENSION_CATALOG, DEFAULT_EXTENSION_STATE, getRunnerExtensionIdForLanguage } from './extensions/catalog';
 import { ResolvedExtensionEntry, ExtensionStateMap } from './extensions/types';
@@ -111,6 +112,7 @@ interface IdeSettings {
   autoSave: boolean;
   defaultTerminalMode: 'console' | 'shell';
   editorTheme: 'vscode-dark' | 'vscode-light';
+  geminiApiKey: string;
 }
 
 const DEFAULT_SETTINGS: IdeSettings = {
@@ -120,7 +122,10 @@ const DEFAULT_SETTINGS: IdeSettings = {
   autoSave: false,
   defaultTerminalMode: 'console',
   editorTheme: 'vscode-dark',
+  geminiApiKey: '',
 };
+
+const IS_NATIVE_APP = Capacitor.isNativePlatform();
 
 const LANGUAGE_OPTIONS = [
   'javascript', 'typescript', 'python', 'html', 'css', 'java', 'cpp', 'c', 'csharp', 'kotlin',
@@ -241,6 +246,8 @@ export default function App() {
   const [activeTopMenu, setActiveTopMenu] = useState<string | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isExtensionsOpen, setIsExtensionsOpen] = useState(false);
+  const [activeToolbarMenu, setActiveToolbarMenu] = useState<'more' | 'editor' | null>(null);
+  const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [landingView, setLandingView] = useState<'home' | 'download'>('home');
   const [explorerFilter, setExplorerFilter] = useState('');
   const [globalSearchQuery, setGlobalSearchQuery] = useState('');
@@ -2007,7 +2014,7 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
           <Settings className="w-6 h-6" />
         </button>
         <div className="flex-1" />
-        <button className="p-2 text-gray-500 hover:text-white">
+        <button onClick={() => setIsProfileOpen(true)} className="p-2 text-gray-500 hover:text-white" title="Profile">
           <div className="w-6 h-6 rounded-full bg-blue-600 flex items-center justify-center text-xs text-white">U</div>
         </button>
       </div>
@@ -2135,6 +2142,20 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
                 </button>
               </div>
               <div className="p-4 space-y-4 max-h-[72vh] overflow-y-auto">
+                <div className="space-y-2">
+                  <div className="text-sm text-gray-300">Gemini API Key (enables AI features)</div>
+                  <input
+                    type="password"
+                    value={ideSettings.geminiApiKey}
+                    onChange={(e) => setIdeSettings(prev => ({ ...prev, geminiApiKey: e.target.value }))}
+                    placeholder="Paste your Gemini API key..."
+                    autoComplete="off"
+                    className="w-full bg-[#0d1117] border border-gray-700 rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500"
+                  />
+                  <div className="text-[11px] text-gray-500">
+                    Get a free key at aistudio.google.com — stored only on this device.
+                  </div>
+                </div>
                 <label className="flex items-center justify-between gap-4 text-sm">
                   <span className="text-gray-300">Word Wrap</span>
                   <input
@@ -2237,6 +2258,59 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
                   <div>`Ctrl+S` Save</div>
                   <div>`Ctrl+Shift+F` Search in Project</div>
                 </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Profile Modal */}
+      <AnimatePresence>
+        {isProfileOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[58] bg-black/60 backdrop-blur-sm p-4 md:p-8"
+            onClick={() => setIsProfileOpen(false)}
+          >
+            <motion.div
+              initial={{ y: -16, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              exit={{ y: -16, opacity: 0 }}
+              className="max-w-md mx-auto bg-[#161b22] border border-gray-700 rounded-xl shadow-2xl overflow-hidden"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="p-4 border-b border-gray-800 flex items-center justify-between">
+                <h3 className="text-lg text-white font-semibold">Profile</h3>
+                <button onClick={() => setIsProfileOpen(false)} className="p-1 rounded hover:bg-[#21262d] text-gray-400">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <div className="p-4 space-y-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-12 h-12 rounded-full bg-blue-600 flex items-center justify-center text-lg text-white font-semibold">U</div>
+                  <div>
+                    <div className="text-white font-medium">Local User</div>
+                    <div className="text-xs text-gray-500">Working on this device</div>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-center">
+                  <div className="rounded-lg border border-gray-700 bg-[#0d1117] p-3">
+                    <div className="text-xl text-white font-semibold">{projects.length}</div>
+                    <div className="text-[11px] text-gray-500 uppercase tracking-wide">Projects</div>
+                  </div>
+                  <div className="rounded-lg border border-gray-700 bg-[#0d1117] p-3">
+                    <div className="text-xl text-white font-semibold">{ideSettings.geminiApiKey ? 'On' : 'Off'}</div>
+                    <div className="text-[11px] text-gray-500 uppercase tracking-wide">AI (Gemini)</div>
+                  </div>
+                </div>
+                <button
+                  onClick={() => { setIsProfileOpen(false); openSettingsPanel(); }}
+                  className="w-full px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium"
+                >
+                  Open Settings
+                </button>
               </div>
             </motion.div>
           </motion.div>
@@ -2488,6 +2562,40 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
               )}
             </div>
 
+            {/* Mobile Activity Row */}
+            <div className="flex md:hidden items-center justify-around px-2 py-1.5 border-b border-gray-800 bg-[#11161d]">
+              <button
+                onClick={openExplorerView}
+                className={cn("p-2 rounded-md", sidebarView === 'explorer' ? "text-white bg-gray-800" : "text-gray-500")}
+                title="Explorer"
+              >
+                <Folder className="w-5 h-5" />
+              </button>
+              <button
+                onClick={openSearchView}
+                className={cn("p-2 rounded-md", sidebarView === 'search' ? "text-white bg-gray-800" : "text-gray-500")}
+                title="Search"
+              >
+                <Search className="w-5 h-5" />
+              </button>
+              <button
+                onClick={activeProject ? createFile : createProject}
+                className="p-2 rounded-md text-gray-500 hover:text-white"
+                title={activeProject ? 'New File' : 'New Project'}
+              >
+                <FilePlus className="w-5 h-5" />
+              </button>
+              <button onClick={openExtensionsPanel} className="p-2 rounded-md text-gray-500 hover:text-white" title="Extensions">
+                <Cpu className="w-5 h-5" />
+              </button>
+              <button onClick={openSettingsPanel} className="p-2 rounded-md text-gray-500 hover:text-white" title="Settings">
+                <Settings className="w-5 h-5" />
+              </button>
+              <button onClick={() => setIsProfileOpen(true)} className="p-2 rounded-md" title="Profile">
+                <div className="w-5 h-5 rounded-full bg-blue-600 flex items-center justify-center text-[10px] text-white">U</div>
+              </button>
+            </div>
+
             <div className="flex-1 overflow-y-auto p-2">
               {!activeProject ? (
                 <div className="space-y-4 p-2">
@@ -2653,7 +2761,7 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
         {!activeProject ? (
           <div className="flex-1 overflow-y-auto p-4 md:p-8">
             <div className="max-w-5xl mx-auto">
-              {landingView === 'home' ? (
+              {(landingView === 'home' || IS_NATIVE_APP) ? (
                 <>
                   <div className="rounded-2xl border border-gray-800 bg-gradient-to-b from-[#161b22] via-[#0f1724] to-[#0b111a] p-6 md:p-8 shadow-2xl">
                     <div className="flex flex-col items-center text-center">
@@ -2670,13 +2778,15 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
                         VS Code inspired mobile IDE with a real Alpine Linux terminal. Pick an action and start coding instantly.
                       </p>
 
-                      <button
-                        onClick={() => setLandingView('download')}
-                        className="mt-5 px-6 py-3 bg-gradient-to-r from-blue-600 to-cyan-500 hover:from-blue-500 hover:to-cyan-400 text-white rounded-xl font-semibold shadow-lg shadow-cyan-500/20 flex items-center gap-2"
-                      >
-                        <Download className="w-5 h-5" />
-                        Start With VElo Code
-                      </button>
+                      {!IS_NATIVE_APP && (
+                        <button
+                          onClick={() => setLandingView('download')}
+                          className="mt-5 px-6 py-3 bg-gradient-to-r from-blue-600 to-cyan-500 hover:from-blue-500 hover:to-cyan-400 text-white rounded-xl font-semibold shadow-lg shadow-cyan-500/20 flex items-center gap-2"
+                        >
+                          <Download className="w-5 h-5" />
+                          Start With VElo Code
+                        </button>
+                      )}
                     </div>
 
                     <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -2900,22 +3010,72 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
               <button onClick={handleSave} disabled={!activeFile || isSaving} title="Save" className="p-1.5 hover:bg-gray-800 rounded text-blue-400 disabled:opacity-40">
                 <Save className="w-4 h-4" />
               </button>
-              <button onClick={handleAnalyze} disabled={!activeFile || isAnalyzing} title="AI Analyze" className="p-1.5 hover:bg-gray-800 rounded text-yellow-400 disabled:opacity-40">
-                <Bug className="w-4 h-4" />
-              </button>
-              <button onClick={handleAiCompletion} disabled={!activeFile} title="AI Complete" className="p-1.5 hover:bg-gray-800 rounded text-purple-400 disabled:opacity-40">
-                <Sparkles className="w-4 h-4" />
-              </button>
-              <button
-                onClick={toggleTerminalPanel}
-                title="Terminal"
-                className={cn("p-1.5 hover:bg-gray-800 rounded", terminalOpen ? "text-white bg-gray-800" : "text-gray-400")}
-              >
-                <Terminal className="w-4 h-4" />
-              </button>
-              <button onClick={() => setAiChatOpen(true)} title="AI Chat" className="p-1.5 hover:bg-gray-800 rounded text-gray-400 hover:text-white">
+              <button onClick={() => setAiChatOpen(true)} title="AI Chat" className="p-1.5 hover:bg-gray-800 rounded text-purple-400 hover:text-white">
                 <Bot className="w-4 h-4" />
               </button>
+              <div className="relative">
+                <button
+                  onClick={() => setActiveToolbarMenu(prev => (prev === 'editor' ? null : 'editor'))}
+                  title="Editor Options"
+                  className={cn("p-1.5 hover:bg-gray-800 rounded", activeToolbarMenu === 'editor' ? "text-white bg-gray-800" : "text-gray-400")}
+                >
+                  <Pencil className="w-4 h-4" />
+                </button>
+                {activeToolbarMenu === 'editor' && (
+                  <div className="absolute right-0 top-full mt-1 w-56 bg-[#161b22] border border-gray-700 rounded-md shadow-xl z-50 p-1">
+                    <MenuItem
+                      label={ideSettings.wordWrap ? 'Disable Word Wrap' : 'Enable Word Wrap'}
+                      onClick={() => { setIdeSettings(prev => ({ ...prev, wordWrap: !prev.wordWrap })); setActiveToolbarMenu(null); }}
+                    />
+                    <MenuItem label="Format Document" hint="Shift+Alt+F" onClick={() => { formatDocument(); setActiveToolbarMenu(null); }} disabled={!activeFile} />
+                    <MenuItem label="Select All" onClick={() => { selectAllInEditor(); setActiveToolbarMenu(null); }} disabled={!activeFile} />
+                    <MenuItem label="Insert Boilerplate" hint="Ctrl+Shift+B" onClick={() => { openBoilerplatePicker(); setActiveToolbarMenu(null); }} disabled={!activeFile} />
+                    <MenuItem label="Rename File" onClick={() => { renameFile(); setActiveToolbarMenu(null); }} disabled={!activeFile} />
+                    <MenuItem
+                      label="Increase Font Size"
+                      onClick={() => setIdeSettings(prev => ({ ...prev, editorFontSize: Math.min(22, prev.editorFontSize + 1) }))}
+                    />
+                    <MenuItem
+                      label="Decrease Font Size"
+                      onClick={() => setIdeSettings(prev => ({ ...prev, editorFontSize: Math.max(12, prev.editorFontSize - 1) }))}
+                    />
+                  </div>
+                )}
+              </div>
+              <div className="relative">
+                <button
+                  onClick={() => setActiveToolbarMenu(prev => (prev === 'more' ? null : 'more'))}
+                  title="More Tools"
+                  className={cn("p-1.5 hover:bg-gray-800 rounded", activeToolbarMenu === 'more' ? "text-white bg-gray-800" : "text-gray-400")}
+                >
+                  <MoreVertical className="w-4 h-4" />
+                </button>
+                {activeToolbarMenu === 'more' && (
+                  <div className="absolute right-0 top-full mt-1 w-56 bg-[#161b22] border border-gray-700 rounded-md shadow-xl z-50 p-1">
+                    <MenuItem
+                      label={terminalOpen ? 'Hide Terminal' : 'Show Terminal'}
+                      onClick={() => { toggleTerminalPanel(); setActiveToolbarMenu(null); }}
+                    />
+                    <MenuItem
+                      label="Open Console"
+                      onClick={() => { setTerminalOpen(true); setTerminalMode('console'); setActiveToolbarMenu(null); }}
+                    />
+                    <MenuItem
+                      label="Open Alpine Shell"
+                      onClick={() => { setTerminalOpen(true); setTerminalMode('shell'); setActiveToolbarMenu(null); }}
+                    />
+                    <MenuItem label="AI Analyze (Debug)" onClick={() => { handleAnalyze(); setActiveToolbarMenu(null); }} disabled={!activeFile || isAnalyzing} />
+                    <MenuItem label="AI Complete" onClick={() => { handleAiCompletion(); setActiveToolbarMenu(null); }} disabled={!activeFile} />
+                    <MenuItem label="Command Palette" hint="Ctrl+Shift+P" onClick={() => { openCommandPalette(); setActiveToolbarMenu(null); }} />
+                    <MenuItem label="Extensions" onClick={() => { openExtensionsPanel(); setActiveToolbarMenu(null); }} />
+                    <MenuItem label="Settings" hint="Ctrl+," onClick={() => { openSettingsPanel(); setActiveToolbarMenu(null); }} />
+                    {!IS_NATIVE_APP && (
+                      <MenuItem label="New Window" onClick={() => { openNewWindow(); setActiveToolbarMenu(null); }} />
+                    )}
+                    <MenuItem label="Switch Project" onClick={() => { setActiveProject(null); setActiveToolbarMenu(null); }} />
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* Open File Tabs */}
@@ -2949,7 +3109,7 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
             )}
 
             {/* Editor / Preview */}
-            <div className="flex-1 min-h-0 overflow-hidden relative" onClick={() => setActiveTopMenu(null)}>
+            <div className="flex-1 min-h-0 overflow-hidden relative" onClick={() => { setActiveTopMenu(null); setActiveToolbarMenu(null); }}>
               {previewMode && previewDocument !== null ? (
                 <div className="absolute inset-0 flex flex-col bg-white">
                   <div className="flex items-center justify-between px-3 py-1.5 bg-[#161b22] border-b border-gray-800">

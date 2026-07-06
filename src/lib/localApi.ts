@@ -9,7 +9,7 @@ import { ensureAlpineReady, startTerminalJob, pollTerminalJob, removeTerminalJob
  * and serves all /api/* routes locally:
  *   - Projects/files are stored on-device (localStorage).
  *   - /api/run executes code inside the bundled Alpine Linux (proot).
- *   - /api/ai/* returns a clear offline message.
+ *   - /api/ai/* calls the Gemini API directly using the key from Settings.
  */
 
 type StoredFile = {
@@ -260,12 +260,160 @@ async function handleLocalApi(url: URL, init: RequestInit | undefined): Promise<
     }
   }
 
-  // ---- AI (requires network/server; not available offline in the APK) ----
+  // ---- AI (calls Gemini directly using the key from Settings) ----
   if (path.startsWith('/api/ai/')) {
-    return jsonResponse({ error: 'AI features are not available in the offline Android build yet.' }, 503);
+    return handleLocalAi(path, body);
   }
 
   return null;
+}
+
+const SETTINGS_KEY = 'velo.ide.settings';
+const GEMINI_MODEL = 'gemini-2.0-flash';
+
+function getGeminiApiKey(): string {
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (typeof parsed?.geminiApiKey === 'string') return parsed.geminiApiKey.trim();
+    }
+  } catch {
+    // corrupted settings, treat as no key
+  }
+  return '';
+}
+
+async function callGemini(prompt: string, apiKey: string, jsonMode = false): Promise<string> {
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(apiKey)}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        ...(jsonMode ? { generationConfig: { responseMimeType: 'application/json' } } : {}),
+      }),
+    },
+  );
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(payload?.error?.message || `Gemini request failed (${res.status})`);
+  }
+  const parts = payload?.candidates?.[0]?.content?.parts;
+  if (Array.isArray(parts)) {
+    return parts.map((part: any) => (typeof part?.text === 'string' ? part.text : '')).join('');
+  }
+  return '';
+}
+
+const normalizeJsonText = (text: string) =>
+  text
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/\s*```$/, '')
+    .trim();
+
+async function handleLocalAi(path: string, body: any): Promise<Response> {
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) {
+    return jsonResponse({
+      error: 'AI needs a Gemini API key. Open Settings and paste your key (get one free at aistudio.google.com).',
+    }, 503);
+  }
+
+  try {
+    if (path === '/api/ai/complete') {
+      const { code, language, context } = body;
+      const prompt = context
+        ? `You are an expert coding assistant.\nContext: ${context}\nCode:\n\`\`\`${language}\n${code}\n\`\`\`\nAnswer the user's question or provide the requested code. Keep it concise.`
+        : `Complete the following ${language} code. Return ONLY the code completion, no markdown, no explanations.\nCode:\n${code}`;
+      const text = await callGemini(prompt, apiKey, false);
+      return jsonResponse({ completion: text });
+    }
+
+    if (path === '/api/ai/lint') {
+      const { code, language } = body;
+      const prompt = `Analyze the following ${language} code for errors, bugs, or improvements.
+Return a JSON array of objects with the following structure:
+[
+  {
+    "line": <line_number_1_indexed>,
+    "severity": "error" | "warning" | "info",
+    "message": "<description_of_issue>",
+    "fix": "<suggested_replacement_for_the_ENTIRE_line>"
+  }
+]
+If there are no issues, return an empty array [].
+Return ONLY valid JSON, no markdown formatting like \`\`\`json.
+
+Code:
+${code}`;
+      const text = await callGemini(prompt, apiKey, true);
+      let diagnostics: any[] = [];
+      try {
+        diagnostics = JSON.parse(normalizeJsonText(text || '[]'));
+      } catch {
+        diagnostics = [];
+      }
+      return jsonResponse({ diagnostics });
+    }
+
+    if (path === '/api/ai/agent') {
+      const { message, project, files, activeFilePath } = body;
+      if (typeof message !== 'string' || !message.trim()) {
+        return jsonResponse({ error: 'message is required' }, 400);
+      }
+      const safeFiles = (Array.isArray(files) ? files.slice(0, 60) : []).map((file: any) => ({
+        path: typeof file?.path === 'string' ? file.path : '',
+        content: typeof file?.content === 'string' ? file.content.slice(0, 12000) : '',
+      }));
+      const prompt = `You are a coding agent for an in-browser IDE.
+Return ONLY valid JSON with this exact schema:
+{
+  "reply": "short user-facing summary",
+  "actions": [
+    {"type":"create_file","path":"path.ext","content":"FULL FILE CONTENT"},
+    {"type":"update_file","path":"path.ext","content":"FULL FILE CONTENT"},
+    {"type":"rename_file","path":"old.ext","newPath":"new.ext"},
+    {"type":"delete_file","path":"path.ext"},
+    {"type":"open_file","path":"path.ext"}
+  ]
+}
+
+Rules:
+- Use actions only when needed by the request.
+- If user asks only explanation, keep actions [].
+- Use FULL file content in create/update actions (not patch/diff).
+- Keep paths relative (no absolute paths).
+- Prefer minimal number of actions.
+
+Project:
+- name: ${typeof project?.name === 'string' ? project.name : 'Project'}
+- language: ${typeof project?.language === 'string' ? project.language : 'javascript'}
+- activeFilePath: ${typeof activeFilePath === 'string' ? activeFilePath : 'none'}
+
+Files JSON:
+${JSON.stringify(safeFiles)}
+
+User message:
+${message}`;
+      const text = await callGemini(prompt, apiKey, true);
+      let payload: any;
+      try {
+        payload = JSON.parse(normalizeJsonText(text || ''));
+      } catch {
+        return jsonResponse({ reply: text?.trim() || 'I could not generate a valid plan right now.', actions: [] });
+      }
+      const reply = typeof payload?.reply === 'string' ? payload.reply.trim() : 'Done. I prepared the requested changes.';
+      const actions = (Array.isArray(payload?.actions) ? payload.actions : []).slice(0, 12);
+      return jsonResponse({ reply, actions });
+    }
+
+    return jsonResponse({ error: 'Unknown AI route' }, 404);
+  } catch (error: any) {
+    return jsonResponse({ error: error?.message || 'AI request failed' }, 500);
+  }
 }
 
 /**

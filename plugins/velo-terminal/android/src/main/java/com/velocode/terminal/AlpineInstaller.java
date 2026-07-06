@@ -78,7 +78,7 @@ public final class AlpineInstaller {
 
         File rootfs = rootfsDir();
         deleteRecursively(rootfs);
-        if (!rootfs.mkdirs()) {
+        if (!rootfs.isDirectory() && !rootfs.mkdirs()) {
             throw new IOException("Cannot create rootfs dir: " + rootfs);
         }
 
@@ -185,7 +185,13 @@ public final class AlpineInstaller {
 
     private static boolean isSymlink(File file) {
         try {
-            return !file.getCanonicalFile().equals(file.getAbsoluteFile());
+            // Resolve the parent first so symlinked ancestors (e.g. Android's
+            // /data/user/0 -> /data/data) don't make every child look like a link.
+            File parent = file.getParentFile();
+            File resolved = parent == null
+                    ? file
+                    : new File(parent.getCanonicalFile(), file.getName());
+            return !resolved.getCanonicalFile().equals(resolved.getAbsoluteFile());
         } catch (IOException e) {
             return true;
         }
