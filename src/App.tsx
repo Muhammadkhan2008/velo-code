@@ -112,7 +112,11 @@ interface IdeSettings {
   autoSave: boolean;
   defaultTerminalMode: 'console' | 'shell';
   editorTheme: 'vscode-dark' | 'vscode-light';
+  aiProvider: 'gemini' | 'custom';
   geminiApiKey: string;
+  customApiBaseUrl: string;
+  customApiModel: string;
+  customApiKey: string;
 }
 
 const DEFAULT_SETTINGS: IdeSettings = {
@@ -122,7 +126,11 @@ const DEFAULT_SETTINGS: IdeSettings = {
   autoSave: false,
   defaultTerminalMode: 'console',
   editorTheme: 'vscode-dark',
+  aiProvider: 'gemini',
   geminiApiKey: '',
+  customApiBaseUrl: '',
+  customApiModel: '',
+  customApiKey: '',
 };
 
 const IS_NATIVE_APP = Capacitor.isNativePlatform();
@@ -2143,18 +2151,78 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
               </div>
               <div className="p-4 space-y-4 max-h-[72vh] overflow-y-auto">
                 <div className="space-y-2">
-                  <div className="text-sm text-gray-300">Gemini API Key (enables AI features)</div>
-                  <input
-                    type="password"
-                    value={ideSettings.geminiApiKey}
-                    onChange={(e) => setIdeSettings(prev => ({ ...prev, geminiApiKey: e.target.value }))}
-                    placeholder="Paste your Gemini API key..."
-                    autoComplete="off"
-                    className="w-full bg-[#0d1117] border border-gray-700 rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500"
-                  />
-                  <div className="text-[11px] text-gray-500">
-                    Get a free key at aistudio.google.com — stored only on this device.
+                  <div className="text-sm text-gray-300">AI Provider</div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setIdeSettings(prev => ({ ...prev, aiProvider: 'gemini' }))}
+                      className={cn(
+                        "px-2 py-1.5 rounded-lg text-xs font-medium border",
+                        ideSettings.aiProvider === 'gemini'
+                          ? "bg-blue-600/20 border-blue-500 text-blue-400"
+                          : "bg-[#0d1117] border-gray-700 text-gray-400 hover:border-gray-600"
+                      )}
+                    >
+                      Gemini
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIdeSettings(prev => ({ ...prev, aiProvider: 'custom' }))}
+                      className={cn(
+                        "px-2 py-1.5 rounded-lg text-xs font-medium border",
+                        ideSettings.aiProvider === 'custom'
+                          ? "bg-blue-600/20 border-blue-500 text-blue-400"
+                          : "bg-[#0d1117] border-gray-700 text-gray-400 hover:border-gray-600"
+                      )}
+                    >
+                      Custom (OpenAI-compatible)
+                    </button>
                   </div>
+                  {ideSettings.aiProvider === 'gemini' ? (
+                    <>
+                      <input
+                        type="password"
+                        value={ideSettings.geminiApiKey}
+                        onChange={(e) => setIdeSettings(prev => ({ ...prev, geminiApiKey: e.target.value }))}
+                        placeholder="Paste your Gemini API key..."
+                        autoComplete="off"
+                        className="w-full bg-[#0d1117] border border-gray-700 rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500"
+                      />
+                      <div className="text-[11px] text-gray-500">
+                        Get a free key at aistudio.google.com — stored only on this device.
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <input
+                        type="url"
+                        value={ideSettings.customApiBaseUrl}
+                        onChange={(e) => setIdeSettings(prev => ({ ...prev, customApiBaseUrl: e.target.value }))}
+                        placeholder="Base URL, e.g. https://openrouter.ai/api/v1"
+                        autoComplete="off"
+                        className="w-full bg-[#0d1117] border border-gray-700 rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500"
+                      />
+                      <input
+                        type="text"
+                        value={ideSettings.customApiModel}
+                        onChange={(e) => setIdeSettings(prev => ({ ...prev, customApiModel: e.target.value }))}
+                        placeholder="Model, e.g. openai/gpt-4o-mini"
+                        autoComplete="off"
+                        className="w-full bg-[#0d1117] border border-gray-700 rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500"
+                      />
+                      <input
+                        type="password"
+                        value={ideSettings.customApiKey}
+                        onChange={(e) => setIdeSettings(prev => ({ ...prev, customApiKey: e.target.value }))}
+                        placeholder="API key"
+                        autoComplete="off"
+                        className="w-full bg-[#0d1117] border border-gray-700 rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500"
+                      />
+                      <div className="text-[11px] text-gray-500">
+                        Works with any OpenAI-compatible API (OpenRouter, OpenAI, Groq, Together, local servers). Stored only on this device.
+                      </div>
+                    </>
+                  )}
                 </div>
                 <label className="flex items-center justify-between gap-4 text-sm">
                   <span className="text-gray-300">Word Wrap</span>
@@ -2301,8 +2369,8 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
                     <div className="text-[11px] text-gray-500 uppercase tracking-wide">Projects</div>
                   </div>
                   <div className="rounded-lg border border-gray-700 bg-[#0d1117] p-3">
-                    <div className="text-xl text-white font-semibold">{ideSettings.geminiApiKey ? 'On' : 'Off'}</div>
-                    <div className="text-[11px] text-gray-500 uppercase tracking-wide">AI (Gemini)</div>
+                    <div className="text-xl text-white font-semibold">{(ideSettings.aiProvider === 'custom' ? ideSettings.customApiKey : ideSettings.geminiApiKey) ? 'On' : 'Off'}</div>
+                    <div className="text-[11px] text-gray-500 uppercase tracking-wide">AI ({ideSettings.aiProvider === 'custom' ? 'Custom' : 'Gemini'})</div>
                   </div>
                 </div>
                 <button

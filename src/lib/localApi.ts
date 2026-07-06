@@ -271,17 +271,36 @@ async function handleLocalApi(url: URL, init: RequestInit | undefined): Promise<
 const SETTINGS_KEY = 'velo.ide.settings';
 const GEMINI_MODEL = 'gemini-2.0-flash';
 
-function getGeminiApiKey(): string {
+type AiProviderConfig =
+  | { provider: 'gemini'; apiKey: string }
+  | { provider: 'custom'; apiKey: string; baseUrl: string; model: string };
+
+function readSetting(parsed: any, key: string): string {
+  return typeof parsed?.[key] === 'string' ? parsed[key].trim() : '';
+}
+
+function getAiProviderConfig(): AiProviderConfig | null {
+  let parsed: any = null;
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (typeof parsed?.geminiApiKey === 'string') return parsed.geminiApiKey.trim();
-    }
+    if (raw) parsed = JSON.parse(raw);
   } catch {
-    // corrupted settings, treat as no key
+    // corrupted settings, treat as unconfigured
   }
-  return '';
+  if (!parsed) return null;
+
+  const provider = readSetting(parsed, 'aiProvider');
+  if (provider === 'custom') {
+    const apiKey = readSetting(parsed, 'customApiKey');
+    const baseUrl = readSetting(parsed, 'customApiBaseUrl').replace(/\/+$/, '');
+    const model = readSetting(parsed, 'customApiModel');
+    if (!apiKey || !baseUrl || !model) return null;
+    return { provider: 'custom', apiKey, baseUrl, model };
+  }
+
+  const geminiKey = readSetting(parsed, 'geminiApiKey');
+  if (!geminiKey) return null;
+  return { provider: 'gemini', apiKey: geminiKey };
 }
 
 async function callGemini(prompt: string, apiKey: string, jsonMode = false): Promise<string> {
@@ -307,6 +326,38 @@ async function callGemini(prompt: string, apiKey: string, jsonMode = false): Pro
   return '';
 }
 
+// Any OpenAI-compatible provider: OpenAI, OpenRouter, Groq, Together, local servers, etc.
+async function callOpenAiCompatible(
+  prompt: string,
+  config: { apiKey: string; baseUrl: string; model: string },
+  jsonMode = false,
+): Promise<string> {
+  const res = await fetch(`${config.baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${config.apiKey}`,
+    },
+    body: JSON.stringify({
+      model: config.model,
+      messages: [{ role: 'user', content: prompt }],
+      ...(jsonMode ? { response_format: { type: 'json_object' } } : {}),
+    }),
+  });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(payload?.error?.message || `AI provider request failed (${res.status})`);
+  }
+  const content = payload?.choices?.[0]?.message?.content;
+  return typeof content === 'string' ? content : '';
+}
+
+function callAi(prompt: string, config: AiProviderConfig, jsonMode = false): Promise<string> {
+  return config.provider === 'gemini'
+    ? callGemini(prompt, config.apiKey, jsonMode)
+    : callOpenAiCompatible(prompt, config, jsonMode);
+}
+
 const normalizeJsonText = (text: string) =>
   text
     .replace(/^```json\s*/i, '')
@@ -315,10 +366,10 @@ const normalizeJsonText = (text: string) =>
     .trim();
 
 async function handleLocalAi(path: string, body: any): Promise<Response> {
-  const apiKey = getGeminiApiKey();
-  if (!apiKey) {
+  const config = getAiProviderConfig();
+  if (!config) {
     return jsonResponse({
-      error: 'AI needs a Gemini API key. Open Settings and paste your key (get one free at aistudio.google.com).',
+      error: 'AI is not configured. Open Settings and add a Gemini API key or a custom provider (base URL, model, API key).',
     }, 503);
   }
 
@@ -328,7 +379,7 @@ async function handleLocalAi(path: string, body: any): Promise<Response> {
       const prompt = context
         ? `You are an expert coding assistant.\nContext: ${context}\nCode:\n\`\`\`${language}\n${code}\n\`\`\`\nAnswer the user's question or provide the requested code. Keep it concise.`
         : `Complete the following ${language} code. Return ONLY the code completion, no markdown, no explanations.\nCode:\n${code}`;
-      const text = await callGemini(prompt, apiKey, false);
+      const text = await callAi(prompt, config, false);
       return jsonResponse({ completion: text });
     }
 
@@ -349,7 +400,7 @@ Return ONLY valid JSON, no markdown formatting like \`\`\`json.
 
 Code:
 ${code}`;
-      const text = await callGemini(prompt, apiKey, true);
+      const text = await callAi(prompt, config, true);
       let diagnostics: any[] = [];
       try {
         diagnostics = JSON.parse(normalizeJsonText(text || '[]'));
@@ -398,7 +449,7 @@ ${JSON.stringify(safeFiles)}
 
 User message:
 ${message}`;
-      const text = await callGemini(prompt, apiKey, true);
+      const text = await callAi(prompt, config, true);
       let payload: any;
       try {
         payload = JSON.parse(normalizeJsonText(text || ''));
