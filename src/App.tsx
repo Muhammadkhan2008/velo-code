@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Terminal, 
@@ -31,6 +31,13 @@ import {
   Pencil,
   Trash2
 } from 'lucide-react';
+import {
+  ensureAlpineReady,
+  startTerminalJob,
+  pollTerminalJob,
+  stopTerminalJob,
+  removeTerminalJob,
+} from './lib/terminalBridge';
 import CodeMirror, { ReactCodeMirrorRef } from '@uiw/react-codemirror';
 import { javascript } from '@codemirror/lang-javascript';
 import { python } from '@codemirror/lang-python';
@@ -1294,16 +1301,11 @@ export default function App() {
     setShellHistoryIndex(-1);
 
     try {
-      const res = await fetch('/api/terminal/jobs', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command }),
+      await ensureAlpineReady(message => {
+        setShellOutput(prev => [...prev, message]);
       });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to start command');
-      }
-      setActiveTerminalJobId(data.jobId);
+      const jobId = await startTerminalJob(command);
+      setActiveTerminalJobId(jobId);
       setIsShellRunning(true);
     } catch (error: any) {
       setShellOutput(prev => [...prev, `Error: ${error.message || 'Command failed to start'}`]);
@@ -1343,7 +1345,7 @@ export default function App() {
   const stopShellCommand = async () => {
     if (!activeTerminalJobId) return;
     try {
-      await fetch(`/api/terminal/jobs/${activeTerminalJobId}/stop`, { method: 'POST' });
+      await stopTerminalJob(activeTerminalJobId);
     } catch {
       // no-op, polling will settle with current process state
     }
@@ -1620,16 +1622,13 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
 
     const poll = async () => {
       try {
-        const res = await fetch(`/api/terminal/jobs/${activeTerminalJobId}`);
-        const data = await res.json();
-        if (!res.ok) return;
-        if (isCancelled) return;
+        const data = await pollTerminalJob(activeTerminalJobId);
+        if (!data || isCancelled) return;
 
-        setShellOutput(Array.isArray(data.output) ? data.output : []);
-        const done = Boolean(data.done);
-        setIsShellRunning(!done);
-        if (done) {
-          fetch(`/api/terminal/jobs/${activeTerminalJobId}`, { method: 'DELETE' }).catch(() => undefined);
+        setShellOutput(data.output);
+        setIsShellRunning(!data.done);
+        if (data.done) {
+          removeTerminalJob(activeTerminalJobId).catch(() => undefined);
           setActiveTerminalJobId(null);
         }
       } catch {

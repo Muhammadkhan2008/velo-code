@@ -1,0 +1,22 @@
+{
+  "name": "velo-terminal",
+  "version": "0.1.0",
+  "description": "Alpine Linux proot terminal for Velo Code (Android). Runs commands inside an auto-downloaded Alpine rootfs via a bundled proot binary, with a plain Android shell fallback.",
+  "type": "module",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "android/build.gradle",
+    "android/src"
+  ],
+  "capacitor": {
+    "android": {
+      "src": "android"
+    }
+  },
+  "peerDependencies": {
+    "@capacitor/core": ">=7.0.0"
+  }
+}
