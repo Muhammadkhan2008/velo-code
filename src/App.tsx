@@ -1491,9 +1491,10 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
         })
       });
       const data = await res.json();
-      setMessages(prev => [...prev, { role: 'ai', text: data.completion || 'I could not generate a response.' }]);
+      setMessages(prev => [...prev, { role: 'ai', text: data.completion || data.error || 'I could not generate a response.' }]);
     } catch (e) {
-      setMessages(prev => [...prev, { role: 'ai', text: 'Error connecting to AI agent.' }]);
+      const message = e instanceof Error && e.message ? e.message : 'Error connecting to AI agent.';
+      setMessages(prev => [...prev, { role: 'ai', text: message }]);
     } finally {
       setIsAiLoading(false);
     }
