@@ -6,7 +6,6 @@ import {
   Smartphone,
   Monitor,
   Apple,
-  Linux,
   Shield,
   Settings, 
   Folder, 
@@ -2530,6 +2529,128 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
                   </div>
                 </div>
               ) : (
+                sidebarView === 'explorer' ? (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between px-1">
+                      <button
+                        onClick={() => setActiveProject(null)}
+                        className="flex items-center gap-1 text-xs text-gray-400 hover:text-white"
+                      >
+                        <ArrowLeft className="w-3.5 h-3.5" />
+                        Projects
+                      </button>
+                      <div className="flex items-center gap-1">
+                        <button onClick={createFile} className="p-1 hover:bg-gray-800 rounded text-gray-400 hover:text-white" title="New File">
+                          <FilePlus className="w-4 h-4" />
+                        </button>
+                        <button onClick={triggerImportFiles} className="p-1 hover:bg-gray-800 rounded text-gray-400 hover:text-white" title="Import Files">
+                          <Plus className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                    <div className="px-1">
+                      <input
+                        type="text"
+                        value={explorerFilter}
+                        onChange={(e) => setExplorerFilter(e.target.value)}
+                        placeholder="Filter files..."
+                        className="w-full bg-[#0d1117] border border-gray-700 rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500"
+                      />
+                    </div>
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 px-1 pt-1 truncate">
+                      {activeProject.name}
+                    </div>
+                    <div className="space-y-0.5">
+                      {filteredExplorerFiles.map(file => (
+                        <div
+                          key={file.id}
+                          onClick={() => openFile(file, true)}
+                          className={cn(
+                            "group flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer",
+                            activeFile?.id === file.id ? "bg-[#21262d] text-white" : "text-gray-300 hover:bg-[#1c2129]"
+                          )}
+                        >
+                          <FileIcon fileName={file.path} />
+                          <span className="flex-1 truncate text-sm">{file.path}</span>
+                          {draftByFileId[file.id] !== undefined && (
+                            <span className="w-2 h-2 rounded-full bg-blue-400 flex-shrink-0" title="Unsaved changes" />
+                          )}
+                          <button
+                            onClick={(e) => { e.stopPropagation(); renameFile(file); }}
+                            className="opacity-0 group-hover:opacity-100 p-0.5 text-gray-500 hover:text-white"
+                            title="Rename"
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); deleteFile(file); }}
+                            className="opacity-0 group-hover:opacity-100 p-0.5 text-gray-500 hover:text-red-400"
+                            title="Delete"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ))}
+                      {filteredExplorerFiles.length === 0 && (
+                        <div className="text-center py-6 text-gray-500 text-xs">No files found.</div>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-3 p-1">
+                    <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider">Search</h2>
+                    <input
+                      type="text"
+                      value={globalSearchQuery}
+                      onChange={(e) => setGlobalSearchQuery(e.target.value)}
+                      placeholder="Search in project..."
+                      autoFocus
+                      className="w-full bg-[#0d1117] border border-gray-700 rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500"
+                    />
+                    <input
+                      type="text"
+                      value={replaceValue}
+                      onChange={(e) => setReplaceValue(e.target.value)}
+                      placeholder="Replace with..."
+                      className="w-full bg-[#0d1117] border border-gray-700 rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500"
+                    />
+                    <button
+                      onClick={handleReplaceAll}
+                      disabled={isReplacingAll || !globalSearchQuery.trim()}
+                      className="w-full px-2 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {isReplacingAll ? 'Replacing...' : 'Replace All'}
+                    </button>
+                    <div className="space-y-1">
+                      {searchResults.map((hit, index) => (
+                        <button
+                          key={`${hit.file.id}-${hit.lineNumber}-${index}`}
+                          onClick={() => openFileAtLine(hit.file, hit.lineNumber)}
+                          className="w-full text-left px-2 py-1.5 rounded hover:bg-[#1c2129]"
+                        >
+                          <div className="flex items-center gap-2 text-xs text-gray-300">
+                            <FileIcon fileName={hit.file.path} />
+                            <span className="truncate">{hit.file.path}</span>
+                            <span className="text-gray-600">:{hit.lineNumber}</span>
+                          </div>
+                          <div className="text-[11px] text-gray-500 truncate pl-6">{hit.preview}</div>
+                        </button>
+                      ))}
+                      {globalSearchQuery.trim() && searchResults.length === 0 && (
+                        <div className="text-center py-6 text-gray-500 text-xs">No results.</div>
+                      )}
+                    </div>
+                  </div>
+                )
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Main Content */}
+      <div className="flex-1 flex flex-col min-w-0 relative">
+        {!activeProject ? (
           <div className="flex-1 overflow-y-auto p-4 md:p-8">
             <div className="max-w-5xl mx-auto">
               {landingView === 'home' ? (
@@ -2546,7 +2667,7 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
                       <p className="text-[11px] uppercase tracking-[0.24em] text-blue-300/90 mb-2">Start</p>
                       <h1 className="text-2xl md:text-3xl font-bold text-white mb-2">Welcome to VElo Code</h1>
                       <p className="text-gray-400 max-w-2xl">
-                        VS Code inspired quick start for mobile and desktop. Pick an action and start coding instantly.
+                        VS Code inspired mobile IDE with a real Alpine Linux terminal. Pick an action and start coding instantly.
                       </p>
 
                       <button
@@ -2644,7 +2765,7 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
                   <div className="mt-5 text-center">
                     <h2 className="text-2xl md:text-3xl font-bold text-white">Download VElo Code IDE</h2>
                     <p className="text-gray-400 mt-2 max-w-2xl mx-auto">
-                      Choose your platform package. Android and Windows offer flow is ready now. Apple/Linux variants are marked coming soon.
+                      Android APK with a built-in Alpine Linux terminal is ready now. Other platforms are marked coming soon.
                     </p>
                   </div>
 
@@ -2660,15 +2781,12 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
                       </button>
                     </div>
 
-                    <div className="rounded-xl border border-blue-500/40 bg-blue-500/10 p-4">
+                    <div className="rounded-xl border border-gray-700 bg-[#0d1117] p-4">
                       <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2 text-blue-200 font-semibold"><Monitor className="w-4 h-4" /> Windows</div>
-                        <span className="text-[10px] uppercase tracking-wide text-blue-200">EXE</span>
+                        <div className="flex items-center gap-2 text-gray-200 font-semibold"><Monitor className="w-4 h-4" /> Windows</div>
+                        <span className="text-[10px] uppercase tracking-wide text-yellow-300">Coming Soon</span>
                       </div>
-                      <p className="text-xs text-blue-100/80 mt-2">Desktop installer package for Windows machines.</p>
-                      <button onClick={() => triggerPlatformDownload('Windows', '.exe')} className="mt-3 w-full px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium">
-                        Download .exe
-                      </button>
+                      <p className="text-xs text-gray-400 mt-2">Desktop build for Windows will be available later.</p>
                     </div>
 
                     <div className="rounded-xl border border-gray-700 bg-[#0d1117] p-4">
@@ -2689,7 +2807,7 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
 
                     <div className="rounded-xl border border-gray-700 bg-[#0d1117] p-4">
                       <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2 text-gray-200 font-semibold"><Linux className="w-4 h-4" /> Ubuntu</div>
+                        <div className="flex items-center gap-2 text-gray-200 font-semibold"><Terminal className="w-4 h-4" /> Ubuntu</div>
                         <span className="text-[10px] uppercase tracking-wide text-yellow-300">Coming Soon</span>
                       </div>
                       <p className="text-xs text-gray-400 mt-2">Ubuntu .deb package pipeline is in progress.</p>
@@ -2707,6 +2825,273 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
               )}
             </div>
           </div>
+        ) : (
+          <>
+            {/* Editor Top Bar */}
+            <div className="h-11 bg-[#161b22] border-b border-gray-800 flex items-center px-2 gap-1 flex-shrink-0">
+              <button
+                onClick={() => setSidebarOpen(prev => !prev)}
+                className="p-1.5 hover:bg-gray-800 rounded text-gray-400 hover:text-white md:hidden"
+                title="Toggle Sidebar"
+              >
+                <Menu className="w-5 h-5" />
+              </button>
+              <div className="hidden md:flex items-center gap-1">
+                {['File', 'Edit', 'View', 'Run'].map(menu => (
+                  <div key={menu} className="relative">
+                    <button
+                      onClick={() => setActiveTopMenu(prev => (prev === menu ? null : menu))}
+                      className={cn(
+                        "px-2 py-1 rounded text-[12px]",
+                        activeTopMenu === menu ? "bg-[#21262d] text-white" : "text-gray-400 hover:text-white hover:bg-[#1c2129]"
+                      )}
+                    >
+                      {menu}
+                    </button>
+                    {activeTopMenu === menu && (
+                      <div className="absolute left-0 top-full mt-1 w-56 bg-[#161b22] border border-gray-700 rounded-md shadow-xl z-50 p-1">
+                        {menu === 'File' && (
+                          <>
+                            <MenuItem label="New File" hint="Ctrl+N" onClick={runMenuAction(createFile)} />
+                            <MenuItem label="Save" hint="Ctrl+S" onClick={runMenuAction(handleSave)} disabled={!activeFile} />
+                            <MenuItem label="Rename File" onClick={runMenuAction(() => renameFile())} disabled={!activeFile} />
+                            <MenuItem label="Delete File" onClick={runMenuAction(() => deleteFile())} disabled={!activeFile} />
+                            <MenuItem label="Import Files" onClick={runMenuAction(triggerImportFiles)} />
+                            <MenuItem label="Import Folder" onClick={runMenuAction(triggerImportFolder)} />
+                            <MenuItem label="Close Project" onClick={runMenuAction(() => setActiveProject(null))} />
+                          </>
+                        )}
+                        {menu === 'Edit' && (
+                          <>
+                            <MenuItem label="Select All" onClick={runMenuAction(selectAllInEditor)} disabled={!activeFile} />
+                            <MenuItem label="Format Document" hint="Shift+Alt+F" onClick={runMenuAction(formatDocument)} disabled={!activeFile} />
+                            <MenuItem label="Insert Boilerplate" hint="Ctrl+Shift+B" onClick={runMenuAction(openBoilerplatePicker)} disabled={!activeFile} />
+                            <MenuItem label="Search in Project" hint="Ctrl+Shift+F" onClick={runMenuAction(openSearchView)} />
+                          </>
+                        )}
+                        {menu === 'View' && (
+                          <>
+                            <MenuItem label="Command Palette" hint="Ctrl+Shift+P" onClick={runMenuAction(openCommandPalette)} />
+                            <MenuItem label="Toggle Terminal" onClick={runMenuAction(toggleTerminalPanel)} />
+                            <MenuItem label="Extensions" onClick={runMenuAction(openExtensionsPanel)} />
+                            <MenuItem label="Settings" hint="Ctrl+," onClick={runMenuAction(openSettingsPanel)} />
+                            <MenuItem label="New Window" onClick={runMenuAction(openNewWindow)} />
+                          </>
+                        )}
+                        {menu === 'Run' && (
+                          <>
+                            <MenuItem label="Run Active File" onClick={runMenuAction(handleRun)} disabled={!activeFile} />
+                            <MenuItem label="AI Analyze" onClick={runMenuAction(handleAnalyze)} disabled={!activeFile} />
+                            <MenuItem label="Shell: ls" onClick={runMenuAction(() => runShellPreset('ls'))} />
+                            <MenuItem label="Shell: pwd" onClick={runMenuAction(() => runShellPreset('pwd'))} />
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <div className="flex-1 min-w-0 text-center text-xs text-gray-500 truncate px-2">
+                {activeProject.name}{activeFile ? ` — ${activeFile.path}` : ''}
+              </div>
+              <button onClick={handleRun} disabled={!activeFile} title="Run" className="p-1.5 hover:bg-gray-800 rounded text-green-400 disabled:opacity-40">
+                <Play className="w-4 h-4" />
+              </button>
+              <button onClick={handleSave} disabled={!activeFile || isSaving} title="Save" className="p-1.5 hover:bg-gray-800 rounded text-blue-400 disabled:opacity-40">
+                <Save className="w-4 h-4" />
+              </button>
+              <button onClick={handleAnalyze} disabled={!activeFile || isAnalyzing} title="AI Analyze" className="p-1.5 hover:bg-gray-800 rounded text-yellow-400 disabled:opacity-40">
+                <Bug className="w-4 h-4" />
+              </button>
+              <button onClick={handleAiCompletion} disabled={!activeFile} title="AI Complete" className="p-1.5 hover:bg-gray-800 rounded text-purple-400 disabled:opacity-40">
+                <Sparkles className="w-4 h-4" />
+              </button>
+              <button
+                onClick={toggleTerminalPanel}
+                title="Terminal"
+                className={cn("p-1.5 hover:bg-gray-800 rounded", terminalOpen ? "text-white bg-gray-800" : "text-gray-400")}
+              >
+                <Terminal className="w-4 h-4" />
+              </button>
+              <button onClick={() => setAiChatOpen(true)} title="AI Chat" className="p-1.5 hover:bg-gray-800 rounded text-gray-400 hover:text-white">
+                <Bot className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Open File Tabs */}
+            {openFiles.length > 0 && (
+              <div className="flex items-center bg-[#0d1117] border-b border-gray-800 overflow-x-auto flex-shrink-0">
+                {openFiles.map(file => (
+                  <div
+                    key={file.id}
+                    onClick={() => openFile(file)}
+                    className={cn(
+                      "group flex items-center gap-2 px-3 py-2 text-xs border-r border-gray-800 cursor-pointer whitespace-nowrap",
+                      activeFile?.id === file.id
+                        ? "bg-[#161b22] text-white border-t-2 border-t-blue-500"
+                        : "text-gray-400 hover:bg-[#161b22]/60"
+                    )}
+                  >
+                    <FileIcon fileName={file.path} />
+                    <span>{file.path}</span>
+                    {draftByFileId[file.id] !== undefined && (
+                      <span className="w-2 h-2 rounded-full bg-blue-400" />
+                    )}
+                    <button
+                      onClick={(e) => { e.stopPropagation(); closeFileTab(file.id); }}
+                      className="p-0.5 rounded hover:bg-gray-700 opacity-60 group-hover:opacity-100"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Editor / Preview */}
+            <div className="flex-1 min-h-0 overflow-hidden relative" onClick={() => setActiveTopMenu(null)}>
+              {previewMode && previewDocument !== null ? (
+                <div className="absolute inset-0 flex flex-col bg-white">
+                  <div className="flex items-center justify-between px-3 py-1.5 bg-[#161b22] border-b border-gray-800">
+                    <span className="text-xs text-gray-400">Preview</span>
+                    <button onClick={() => setPreviewMode(false)} className="p-1 text-gray-400 hover:text-white">
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                  <iframe title="Preview" srcDoc={previewDocument} className="flex-1 w-full bg-white" sandbox="allow-scripts" />
+                </div>
+              ) : activeFile ? (
+                <CodeMirror
+                  ref={editorRef}
+                  value={code}
+                  height="100%"
+                  style={{ height: '100%', fontSize: `${ideSettings.editorFontSize}px` }}
+                  theme={ideSettings.editorTheme === 'vscode-light' ? vscodeLight : vscodeDark}
+                  extensions={getLanguageExtension(getPathLanguage(activeFile.path) || activeLanguage)}
+                  onChange={handleEditorChange}
+                />
+              ) : (
+                <div className="h-full flex flex-col items-center justify-center text-gray-600 gap-3">
+                  <Code2 className="w-12 h-12" />
+                  <p className="text-sm">Open a file from the explorer to start editing.</p>
+                  <button onClick={createFile} className="px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white text-sm">
+                    New File
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Mobile Quick Symbols */}
+            {activeFile && !previewMode && (
+              <div className="flex md:hidden items-center gap-1 px-2 py-1 bg-[#161b22] border-t border-gray-800 overflow-x-auto flex-shrink-0">
+                {['{', '}', '(', ')', '[', ']', ';', ':', '=', '<', '>', '"', "'", '`', '!', 'Tab'].map(char => (
+                  <button
+                    key={char}
+                    onClick={() => insertChar(char === 'Tab' ? '  ' : char)}
+                    className="px-2.5 py-1 rounded bg-[#21262d] text-gray-300 text-sm font-mono flex-shrink-0"
+                  >
+                    {char}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Terminal Panel */}
+            {terminalOpen && (
+              <div className="h-56 md:h-64 bg-[#0d1117] border-t border-gray-800 flex flex-col flex-shrink-0">
+                <div className="flex items-center justify-between px-2 border-b border-gray-800">
+                  <div className="flex items-center">
+                    <button
+                      onClick={() => setTerminalMode('console')}
+                      className={cn(
+                        "px-3 py-1.5 text-xs uppercase tracking-wide",
+                        terminalMode === 'console' ? "text-white border-b-2 border-blue-500" : "text-gray-500"
+                      )}
+                    >
+                      Console
+                    </button>
+                    <button
+                      onClick={() => setTerminalMode('shell')}
+                      className={cn(
+                        "px-3 py-1.5 text-xs uppercase tracking-wide",
+                        terminalMode === 'shell' ? "text-white border-b-2 border-blue-500" : "text-gray-500"
+                      )}
+                    >
+                      Alpine Shell
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    {terminalMode === 'console' ? (
+                      <button onClick={() => setOutput(['> Ready...'])} className="px-2 py-1 text-[11px] text-gray-500 hover:text-white">
+                        Clear
+                      </button>
+                    ) : (
+                      <button onClick={() => setShellOutput(['$ Shell ready'])} className="px-2 py-1 text-[11px] text-gray-500 hover:text-white">
+                        Clear
+                      </button>
+                    )}
+                    <button onClick={() => setTerminalOpen(false)} className="p-1 text-gray-500 hover:text-white">
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+                <div className="flex-1 overflow-y-auto p-2 font-mono" style={{ fontSize: `${ideSettings.terminalFontSize}px` }}>
+                  {(terminalMode === 'console' ? output : shellOutput).map((line, index) => (
+                    <div
+                      key={index}
+                      className={cn(
+                        "whitespace-pre-wrap break-all",
+                        line.startsWith('$') ? "text-emerald-300" : line.toLowerCase().startsWith('error') ? "text-red-400" : "text-gray-300"
+                      )}
+                    >
+                      {line}
+                    </div>
+                  ))}
+                </div>
+                {terminalMode === 'shell' && (
+                  <div className="flex items-center gap-2 p-2 border-t border-gray-800">
+                    <span className="text-emerald-400 font-mono text-sm">$</span>
+                    <input
+                      type="text"
+                      value={shellCommand}
+                      onChange={(e) => setShellCommand(e.target.value)}
+                      onKeyDown={onShellInputKeyDown}
+                      placeholder={isShellRunning ? 'Command running...' : 'Type a command (Alpine Linux)...'}
+                      disabled={isShellRunning}
+                      className="flex-1 bg-transparent text-sm font-mono text-gray-200 focus:outline-none placeholder:text-gray-600"
+                    />
+                    {isShellRunning ? (
+                      <button onClick={stopShellCommand} className="px-2 py-1 rounded text-[11px] bg-red-600/20 text-red-300 border border-red-600/40">
+                        Stop
+                      </button>
+                    ) : (
+                      <button
+                        onClick={runShellCommand}
+                        disabled={!shellCommand.trim()}
+                        className="px-2 py-1 rounded text-[11px] bg-blue-600/20 text-blue-300 border border-blue-500/40 disabled:opacity-40"
+                      >
+                        Run
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Status Bar */}
+            <div className="h-6 flex items-center justify-between px-3 text-[11px] text-white flex-shrink-0" style={{ backgroundColor: statusBarColor }}>
+              <div className="flex items-center gap-3">
+                <span className="capitalize">{activeLanguage}</span>
+                {activeFile && <span className="truncate max-w-[40vw]">{activeFile.path}</span>}
+              </div>
+              <div className="flex items-center gap-3">
+                {isSaving ? <span>Saving...</span> : hasUnsavedChanges ? <span>Unsaved changes</span> : <span>Saved</span>}
+                <button onClick={toggleTerminalPanel} className="flex items-center gap-1">
+                  <Terminal className="w-3 h-3" /> Terminal
+                </button>
+              </div>
+            </div>
+          </>
         )}
         {/* AI Chat Overlay */}
         <AnimatePresence>
