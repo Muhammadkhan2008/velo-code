@@ -160,7 +160,9 @@ public class VeloTerminalPlugin extends Plugin {
             jobs.put(id, job);
 
             pump(process.getInputStream(), job, null);
-            pump(process.getErrorStream(), job, "Error: ");
+            // stderr is not prefixed: many tools (git, curl, compilers) print
+            // normal progress there and a prefix makes them look like failures.
+            pump(process.getErrorStream(), job, null);
             executor.execute(() -> {
                 try {
                     int code = process.waitFor();
@@ -309,6 +311,50 @@ public class VeloTerminalPlugin extends Plugin {
             job.process.destroyForcibly();
         }
         call.resolve();
+    }
+
+    // ---------- file export ----------
+
+    /** Saves a file into the device's shared Downloads so other apps can access it. */
+    @PluginMethod
+    public void exportFile(PluginCall call) {
+        String fileName = call.getString("fileName");
+        String content = call.getString("content");
+        if (fileName == null || fileName.trim().isEmpty() || content == null) {
+            call.reject("fileName and content are required");
+            return;
+        }
+        String safeName = new File(fileName.trim()).getName();
+        try {
+            String location;
+            if (android.os.Build.VERSION.SDK_INT >= 29) {
+                android.content.ContentValues values = new android.content.ContentValues();
+                values.put(android.provider.MediaStore.Downloads.DISPLAY_NAME, safeName);
+                values.put(android.provider.MediaStore.Downloads.MIME_TYPE, "application/octet-stream");
+                android.net.Uri uri = getContext().getContentResolver()
+                        .insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                if (uri == null) throw new IOException("MediaStore rejected the file");
+                try (OutputStream out = getContext().getContentResolver().openOutputStream(uri)) {
+                    if (out == null) throw new IOException("Cannot open output stream");
+                    out.write(content.getBytes(StandardCharsets.UTF_8));
+                }
+                location = "Downloads/" + safeName;
+            } else {
+                File dir = android.os.Environment.getExternalStoragePublicDirectory(
+                        android.os.Environment.DIRECTORY_DOWNLOADS);
+                if (!dir.exists() && !dir.mkdirs()) throw new IOException("Cannot access Downloads");
+                File dest = new File(dir, safeName);
+                try (OutputStream out = new java.io.FileOutputStream(dest)) {
+                    out.write(content.getBytes(StandardCharsets.UTF_8));
+                }
+                location = dest.getAbsolutePath();
+            }
+            JSObject result = new JSObject();
+            result.put("location", location);
+            call.resolve(result);
+        } catch (IOException e) {
+            call.reject("Export failed: " + e.getMessage());
+        }
     }
 
     private Job requireJob(PluginCall call) {

@@ -55,6 +55,8 @@ export interface VeloTerminalPlugin {
   stopJob(options: { id: string }): Promise<{ id: string; done: boolean }>;
   /** Remove a finished job from the registry. */
   removeJob(options: { id: string }): Promise<void>;
+  /** Save a file into the device's shared Downloads folder. */
+  exportFile(options: { fileName: string; content: string }): Promise<{ location: string }>;
   addListener(
     eventName: 'setupProgress',
     listenerFunc: (event: SetupProgressEvent) => void,

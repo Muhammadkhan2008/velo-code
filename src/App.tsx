@@ -28,7 +28,9 @@ import {
   Bug,
   FilePlus,
   Pencil,
-  Trash2
+  Trash2,
+  Maximize2,
+  Minimize2
 } from 'lucide-react';
 import {
   getTerminalStatus,
@@ -38,6 +40,8 @@ import {
   pollTerminalJob,
   stopTerminalJob,
   removeTerminalJob,
+  syncFilesToAlpine,
+  exportFileToDevice,
 } from './lib/terminalBridge';
 import type { TerminalStatus } from 'velo-terminal';
 import CodeMirror, { ReactCodeMirrorRef } from '@uiw/react-codemirror';
@@ -263,6 +267,9 @@ export default function App() {
   const [isAlpineSetupOpen, setIsAlpineSetupOpen] = useState(false);
   const [isAlpineInstalling, setIsAlpineInstalling] = useState(false);
   const [pendingShellCommand, setPendingShellCommand] = useState<string | null>(null);
+  const [isTerminalFullscreen, setIsTerminalFullscreen] = useState(false);
+  const [isSaveDialogOpen, setIsSaveDialogOpen] = useState(false);
+  const [extensionDetailId, setExtensionDetailId] = useState<string | null>(null);
   const [aiChatOpen, setAiChatOpen] = useState(false);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
   const [commandQuery, setCommandQuery] = useState('');
@@ -746,6 +753,40 @@ export default function App() {
     }
   };
 
+  /** Ctrl+S / Save button: on the phone, ask where to save (Acode-style). */
+  const requestSave = () => {
+    if (!activeFile) return;
+    if (IS_NATIVE_APP) {
+      setIsSaveDialogOpen(true);
+    } else {
+      void handleSave();
+    }
+  };
+
+  /** Saves in the project and also exports a copy to the phone's Downloads (or a browser download on web). */
+  const saveToDevice = async () => {
+    if (!activeFile) return;
+    const content = draftByFileId[activeFile.id] ?? code;
+    await handleSave();
+    const name = activeFile.path.split('/').pop() || 'file.txt';
+    if (IS_NATIVE_APP) {
+      try {
+        const location = await exportFileToDevice(name, content);
+        window.alert(`Saved to ${location || 'Downloads'}`);
+      } catch (error: any) {
+        window.alert(`Save to phone failed: ${error.message || error}`);
+      }
+    } else {
+      const blob = new Blob([content], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = name;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    }
+  };
+
   const handleRun = async () => {
     if (!activeFile) return;
     if (!isExtensionEnabled('runner-core')) {
@@ -1203,6 +1244,7 @@ export default function App() {
               errors.push(`Command needs Alpine (not installed yet): ${action.command}`);
               continue;
             }
+            await syncProjectToAlpine();
           }
 
           setMessages(prev => [...prev, { role: 'ai', text: `Running command:\n$ ${action.command}` }]);
@@ -1379,6 +1421,39 @@ export default function App() {
   const alpineNeedsInstall = (status: TerminalStatus | null) =>
     !!status && status.prootAvailable && !status.alpineInstalled;
 
+  /** Copies the open project's files into Alpine's /root so shell commands see them. */
+  const syncProjectToAlpine = async (announce = false): Promise<boolean> => {
+    if (!IS_NATIVE_APP || !activeProject || files.length === 0) return false;
+    const status = alpineStatus?.alpineInstalled ? alpineStatus : await refreshAlpineStatus();
+    if (!status?.alpineInstalled) {
+      if (announce) appendShellLine('[sync] Install Alpine first to sync project files.');
+      return false;
+    }
+    try {
+      const payload = files.map(file => ({
+        path: file.path,
+        content: draftByFileId[file.id] ?? file.content,
+      }));
+      return await syncFilesToAlpine(payload, '/root', line => {
+        if (line.startsWith('[sync]')) appendShellLine(line);
+      });
+    } catch (error: any) {
+      appendShellLine(`Error: file sync failed: ${error.message || error}`);
+      return false;
+    }
+  };
+
+  /** Lists compilers/runtimes installed inside Alpine in the shell output. */
+  const showInstalledRuntimes = async () => {
+    setTerminalOpen(true);
+    setTerminalMode('shell');
+    appendShellLine('$ checking installed runtimes...');
+    const probe = 'for c in python3 node npm gcc g++ go rustc cargo javac java php ruby perl git make cmake; do v=$("$c" --version 2>/dev/null | head -n 1); [ -n "$v" ] && echo "  $c -> $v"; done; echo "[runtimes] done - add more with: apk add <package>"';
+    await runTerminalCommand(probe, line => {
+      if (line.startsWith('  ') || line.startsWith('[runtimes]')) appendShellLine(line);
+    }, 60_000);
+  };
+
   const startAlpineInstall = async (): Promise<boolean> => {
     if (isAlpineInstalling) return false;
     setIsAlpineInstalling(true);
@@ -1450,6 +1525,7 @@ export default function App() {
       } catch {
         // status check failed; fall through and let the job surface any error
       }
+      await syncProjectToAlpine();
     }
 
     await executeShellCommand(command);
@@ -1709,6 +1785,11 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
         openCommandPalette();
       }
 
+      if (hasModifier && event.shiftKey && key === 'n') {
+        event.preventDefault();
+        window.open(window.location.href, '_blank');
+      }
+
       if (hasModifier && key === 'n' && !event.shiftKey) {
         event.preventDefault();
         if (activeProject) {
@@ -1725,7 +1806,12 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
 
       if (hasModifier && key === 's') {
         event.preventDefault();
-        handleSave();
+        requestSave();
+      }
+
+      if (hasModifier && key === '`') {
+        event.preventDefault();
+        setTerminalOpen(prev => !prev);
       }
 
       if (hasModifier && event.shiftKey && key === 'f') {
@@ -1748,15 +1834,26 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
         openBoilerplatePicker();
       }
 
+      const target = event.target as HTMLElement | null;
+      const isEditing = !!target && (
+        target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable
+      );
+
+      if (event.altKey && event.key === 'ArrowLeft' && !isEditing) {
+        event.preventDefault();
+        setActiveProject(null);
+      }
+
       if (event.key === 'Escape') {
         setIsCommandPaletteOpen(false);
         setActiveTopMenu(null);
+        setIsTerminalFullscreen(false);
       }
     };
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [activeProject, createFile, createProject, handleSave, openSearchView, openBoilerplatePicker]);
+  }, [activeProject, createFile, createProject, requestSave, openSearchView, openBoilerplatePicker]);
 
   useEffect(() => {
     if (!activeTerminalJobId) return;
@@ -2087,6 +2184,127 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
     setActiveTopMenu(null);
   };
 
+  const terminalPanel = terminalOpen ? (
+    <div className={cn(
+      "bg-[#0d1117] flex flex-col",
+      isTerminalFullscreen
+        ? "fixed inset-0 z-[70]"
+        : "h-56 md:h-64 border-t border-gray-800 flex-shrink-0"
+    )}>
+      <div className="flex items-center justify-between px-2 border-b border-gray-800">
+        <div className="flex items-center">
+          <button
+            onClick={() => setTerminalMode('console')}
+            className={cn(
+              "px-3 py-1.5 text-xs uppercase tracking-wide",
+              terminalMode === 'console' ? "text-white border-b-2 border-blue-500" : "text-gray-500"
+            )}
+          >
+            Console
+          </button>
+          <button
+            onClick={() => { setTerminalMode('shell'); void syncProjectToAlpine(); }}
+            className={cn(
+              "px-3 py-1.5 text-xs uppercase tracking-wide",
+              terminalMode === 'shell' ? "text-white border-b-2 border-blue-500" : "text-gray-500"
+            )}
+          >
+            Alpine Shell
+          </button>
+        </div>
+        <div className="flex items-center gap-1">
+          {terminalMode === 'shell' && IS_NATIVE_APP && alpineNeedsInstall(alpineStatus) && (
+            <button
+              onClick={() => setIsAlpineSetupOpen(true)}
+              disabled={isAlpineInstalling}
+              className="px-2 py-1 text-[11px] rounded bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-60"
+            >
+              {isAlpineInstalling ? 'Installing...' : 'Install Alpine'}
+            </button>
+          )}
+          {terminalMode === 'shell' && IS_NATIVE_APP && alpineStatus?.alpineInstalled && (
+            <>
+              <button
+                onClick={() => { void syncProjectToAlpine(true); }}
+                disabled={!activeProject}
+                className="px-2 py-1 text-[11px] text-gray-500 hover:text-white disabled:opacity-40"
+                title="Copy project files into Alpine /root"
+              >
+                Sync Files
+              </button>
+              <button
+                onClick={() => { void showInstalledRuntimes(); }}
+                className="px-2 py-1 text-[11px] text-gray-500 hover:text-white"
+                title="List installed compilers and runtimes"
+              >
+                Runtimes
+              </button>
+            </>
+          )}
+          {terminalMode === 'console' ? (
+            <button onClick={() => setOutput(['> Ready...'])} className="px-2 py-1 text-[11px] text-gray-500 hover:text-white">
+              Clear
+            </button>
+          ) : (
+            <button onClick={() => setShellOutput(['$ Shell ready'])} className="px-2 py-1 text-[11px] text-gray-500 hover:text-white">
+              Clear
+            </button>
+          )}
+          <button
+            onClick={() => setIsTerminalFullscreen(prev => !prev)}
+            className="p-1 text-gray-500 hover:text-white"
+            title={isTerminalFullscreen ? 'Exit full screen' : 'Full screen'}
+          >
+            {isTerminalFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+          </button>
+          <button onClick={() => { setTerminalOpen(false); setIsTerminalFullscreen(false); }} className="p-1 text-gray-500 hover:text-white">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+      <div className="flex-1 overflow-y-auto p-2 font-mono" style={{ fontSize: `${ideSettings.terminalFontSize}px` }}>
+        {(terminalMode === 'console' ? output : shellOutput).map((line, index) => (
+          <div
+            key={index}
+            className={cn(
+              "whitespace-pre-wrap break-all",
+              line.startsWith('$') ? "text-emerald-300" : line.toLowerCase().startsWith('error') ? "text-red-400" : "text-gray-300"
+            )}
+          >
+            {line}
+          </div>
+        ))}
+      </div>
+      {terminalMode === 'shell' && (
+        <div className="flex items-center gap-2 p-2 border-t border-gray-800">
+          <span className="text-emerald-400 font-mono text-sm">$</span>
+          <input
+            type="text"
+            value={shellCommand}
+            onChange={(e) => setShellCommand(e.target.value)}
+            onKeyDown={onShellInputKeyDown}
+            placeholder={isShellRunning ? 'Command running...' : 'Type a command (Alpine Linux)...'}
+            disabled={isShellRunning}
+            className="flex-1 bg-transparent text-sm font-mono text-gray-200 focus:outline-none placeholder:text-gray-600"
+          />
+          {isShellRunning ? (
+            <button onClick={stopShellCommand} className="px-2 py-1 rounded text-[11px] bg-red-600/20 text-red-300 border border-red-600/40">
+              Stop
+            </button>
+          ) : (
+            <button
+              onClick={runShellCommand}
+              disabled={!shellCommand.trim()}
+              className="px-2 py-1 rounded text-[11px] bg-blue-600/20 text-blue-300 border border-blue-500/40 disabled:opacity-40"
+            >
+              Run
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  ) : null;
+
   return (
     <div className="flex h-screen w-full bg-[#0d1117] text-gray-300 font-sans overflow-hidden">
       <input
@@ -2369,6 +2587,27 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
                   />
                 </label>
                 <div className="space-y-2">
+                  <div className="text-sm text-gray-300">Keyboard Shortcuts</div>
+                  <div className="rounded-lg border border-gray-800 bg-[#0d1117] p-2 text-[11px] space-y-1">
+                    {[
+                      ['Ctrl+S', 'Save (asks where on the phone)'],
+                      ['Ctrl+N', 'New file / project'],
+                      ['Ctrl+Shift+N', 'New window'],
+                      ['Ctrl+P', 'Command palette'],
+                      ['Ctrl+Shift+F', 'Search in project'],
+                      ['Alt+Shift+F', 'Format document'],
+                      ['Ctrl+`', 'Toggle terminal'],
+                      ['Alt+\u2190', 'Back to home'],
+                      ['Ctrl+,', 'Settings'],
+                    ].map(([keys, label]) => (
+                      <div key={keys} className="flex items-center justify-between gap-3">
+                        <span className="text-gray-400">{label}</span>
+                        <code className="text-gray-300 bg-[#161b22] border border-gray-700 rounded px-1.5 py-0.5">{keys}</code>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div className="space-y-2">
                   <div className="text-sm text-gray-300">Editor Font Size: {ideSettings.editorFontSize}px</div>
                   <input
                     type="range"
@@ -2571,6 +2810,136 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
         )}
       </AnimatePresence>
 
+      {/* Save Location Dialog */}
+      <AnimatePresence>
+        {isSaveDialogOpen && activeFile && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[63] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+            onClick={() => setIsSaveDialogOpen(false)}
+          >
+            <motion.div
+              initial={{ y: -16, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              exit={{ y: -16, opacity: 0 }}
+              className="w-full max-w-sm bg-[#161b22] border border-gray-700 rounded-xl shadow-2xl overflow-hidden"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="p-4 border-b border-gray-800 flex items-center justify-between">
+                <h3 className="text-white font-semibold text-sm">Save {activeFile.path.split('/').pop()}</h3>
+                <button onClick={() => setIsSaveDialogOpen(false)} className="p-1 rounded hover:bg-[#21262d] text-gray-400">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="p-4 space-y-2">
+                <p className="text-xs text-gray-400">Where do you want to save this file?</p>
+                <button
+                  onClick={() => { setIsSaveDialogOpen(false); void handleSave(); }}
+                  className="w-full px-3 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium text-left"
+                >
+                  In this project
+                  <span className="block text-[11px] font-normal text-blue-100/80">Stays inside Velo Code</span>
+                </button>
+                <button
+                  onClick={() => { setIsSaveDialogOpen(false); void saveToDevice(); }}
+                  className="w-full px-3 py-2.5 rounded-lg bg-[#21262d] hover:bg-[#30363d] border border-gray-700 text-gray-100 text-sm font-medium text-left"
+                >
+                  Project + phone storage
+                  <span className="block text-[11px] font-normal text-gray-400">Also copies to the Downloads folder</span>
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Extension Details Modal */}
+      <AnimatePresence>
+        {extensionDetailId && (() => {
+          const detail = extensionEntries.find(entry => entry.id === extensionDetailId);
+          if (!detail) return null;
+          return (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[61] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+              onClick={() => setExtensionDetailId(null)}
+            >
+              <motion.div
+                initial={{ y: -16, opacity: 0 }}
+                animate={{ y: 0, opacity: 1 }}
+                exit={{ y: -16, opacity: 0 }}
+                className="w-full max-w-md bg-[#161b22] border border-gray-700 rounded-xl shadow-2xl overflow-hidden"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <div className="p-4 border-b border-gray-800 flex items-center justify-between">
+                  <div>
+                    <h3 className="text-white font-semibold">{detail.name}</h3>
+                    <div className="text-[11px] uppercase tracking-wide text-blue-300 mt-0.5">{detail.category}</div>
+                  </div>
+                  <button onClick={() => setExtensionDetailId(null)} className="p-1 rounded hover:bg-[#21262d] text-gray-400">
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+                <div className="p-4 space-y-3 max-h-[60vh] overflow-y-auto">
+                  <p className="text-sm text-gray-300">{detail.description}</p>
+                  <div className="text-xs text-gray-400 space-y-1.5">
+                    <div>
+                      <span className="text-gray-500">Status: </span>
+                      {detail.enabled ? 'Enabled' : detail.installed ? 'Installed (disabled)' : 'Not installed'}
+                    </div>
+                    {detail.languages && detail.languages.length > 0 && (
+                      <div>
+                        <span className="text-gray-500">Languages: </span>
+                        {detail.languages.join(', ')}
+                      </div>
+                    )}
+                    {detail.runnerMode && detail.runnerMode !== 'none' && (
+                      <div>
+                        <span className="text-gray-500">Runs code: </span>
+                        {detail.runnerMode === 'browser' ? 'in the editor (browser engine)' : 'in the Alpine Linux terminal'}
+                      </div>
+                    )}
+                    {detail.alpinePackages && detail.alpinePackages.length > 0 && (
+                      <div className="rounded-lg border border-gray-800 bg-[#0d1117] p-2">
+                        <div className="text-gray-500 mb-1">Installs in Alpine (live in the terminal):</div>
+                        <code className="text-emerald-300">apk add {detail.alpinePackages.join(' ')}</code>
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 pt-1">
+                    <button
+                      disabled={downloadingExtensionIds.includes(detail.id)}
+                      onClick={() => toggleExtensionInstall(detail.id)}
+                      className={cn(
+                        "px-3 py-1.5 rounded text-xs border disabled:opacity-50",
+                        detail.installed
+                          ? "border-red-600/40 text-red-300 hover:bg-red-600/10"
+                          : "border-blue-500/40 text-blue-300 hover:bg-blue-500/10"
+                      )}
+                    >
+                      {downloadingExtensionIds.includes(detail.id)
+                        ? 'Downloading...'
+                        : (detail.installed ? 'Uninstall' : 'Install')}
+                    </button>
+                    <button
+                      disabled={!detail.installed}
+                      onClick={() => toggleExtensionEnable(detail.id)}
+                      className="px-3 py-1.5 rounded text-xs border border-gray-700 text-gray-200 disabled:opacity-40 hover:bg-[#21262d]"
+                    >
+                      {detail.enabled ? 'Disable' : 'Enable'}
+                    </button>
+                  </div>
+                </div>
+              </motion.div>
+            </motion.div>
+          );
+        })()}
+      </AnimatePresence>
+
       {/* Extensions Modal */}
       <AnimatePresence>
         {isExtensionsOpen && (
@@ -2598,10 +2967,10 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
                 {extensionEntries.map(extension => (
                   <div key={extension.id} className="rounded-lg border border-gray-700 bg-[#0d1117] p-3">
                     <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <div className="text-sm text-white font-medium">{extension.name}</div>
+                      <button className="text-left" onClick={() => setExtensionDetailId(extension.id)}>
+                        <div className="text-sm text-white font-medium hover:underline">{extension.name}</div>
                         <div className="text-[11px] uppercase tracking-wide text-blue-300 mt-0.5">{extension.category}</div>
-                      </div>
+                      </button>
                       <div className={cn(
                         "text-[10px] px-2 py-0.5 rounded-full border",
                         extension.enabled
@@ -2633,6 +3002,12 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
                         className="px-2.5 py-1.5 rounded text-xs border border-gray-700 text-gray-200 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-[#21262d]"
                       >
                         {extension.enabled ? 'Disable' : 'Enable'}
+                      </button>
+                      <button
+                        onClick={() => setExtensionDetailId(extension.id)}
+                        className="px-2.5 py-1.5 rounded text-xs border border-gray-700 text-gray-400 hover:text-white hover:bg-[#21262d]"
+                      >
+                        Details
                       </button>
                     </div>
                   </div>
@@ -3013,6 +3388,7 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
       {/* Main Content */}
       <div className="flex-1 flex flex-col min-w-0 relative">
         {!activeProject ? (
+          <>
           <div className="flex-1 overflow-y-auto p-4 md:p-8">
             <div className="max-w-5xl mx-auto">
               {(landingView === 'home' || IS_NATIVE_APP) ? (
@@ -3078,6 +3454,13 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
                       >
                         <Cpu className="w-5 h-5" />
                         Extensions
+                      </button>
+                      <button
+                        onClick={() => { setTerminalOpen(true); setTerminalMode('shell'); setIsTerminalFullscreen(true); }}
+                        className="w-full px-4 py-3 bg-[#21262d] hover:bg-[#30363d] text-gray-100 rounded-lg font-medium transition-colors border border-gray-700 flex items-center justify-center gap-2"
+                      >
+                        <Terminal className="w-5 h-5" />
+                        Terminal
                       </button>
                       <button
                         onClick={openSettingsPanel}
@@ -3189,6 +3572,8 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
               )}
             </div>
           </div>
+          {terminalPanel}
+          </>
         ) : (
           <>
             {/* Editor Top Bar */}
@@ -3217,7 +3602,8 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
                         {menu === 'File' && (
                           <>
                             <MenuItem label="New File" hint="Ctrl+N" onClick={runMenuAction(createFile)} />
-                            <MenuItem label="Save" hint="Ctrl+S" onClick={runMenuAction(handleSave)} disabled={!activeFile} />
+                            <MenuItem label="Save" hint="Ctrl+S" onClick={runMenuAction(requestSave)} disabled={!activeFile} />
+                            <MenuItem label="Save to Phone (Downloads)" onClick={runMenuAction(() => { void saveToDevice(); })} disabled={!activeFile} />
                             <MenuItem label="Rename File" onClick={runMenuAction(() => renameFile())} disabled={!activeFile} />
                             <MenuItem label="Delete File" onClick={runMenuAction(() => deleteFile())} disabled={!activeFile} />
                             <MenuItem label="Import Files" onClick={runMenuAction(triggerImportFiles)} />
@@ -3261,7 +3647,7 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
               <button onClick={handleRun} disabled={!activeFile} title="Run" className="p-1.5 hover:bg-gray-800 rounded text-green-400 disabled:opacity-40">
                 <Play className="w-4 h-4" />
               </button>
-              <button onClick={handleSave} disabled={!activeFile || isSaving} title="Save" className="p-1.5 hover:bg-gray-800 rounded text-blue-400 disabled:opacity-40">
+              <button onClick={requestSave} disabled={!activeFile || isSaving} title="Save" className="p-1.5 hover:bg-gray-800 rounded text-blue-400 disabled:opacity-40">
                 <Save className="w-4 h-4" />
               </button>
               <button onClick={() => setAiChatOpen(true)} title="AI Chat" className="p-1.5 hover:bg-gray-800 rounded text-purple-400 hover:text-white">
@@ -3411,95 +3797,7 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
             )}
 
             {/* Terminal Panel */}
-            {terminalOpen && (
-              <div className="h-56 md:h-64 bg-[#0d1117] border-t border-gray-800 flex flex-col flex-shrink-0">
-                <div className="flex items-center justify-between px-2 border-b border-gray-800">
-                  <div className="flex items-center">
-                    <button
-                      onClick={() => setTerminalMode('console')}
-                      className={cn(
-                        "px-3 py-1.5 text-xs uppercase tracking-wide",
-                        terminalMode === 'console' ? "text-white border-b-2 border-blue-500" : "text-gray-500"
-                      )}
-                    >
-                      Console
-                    </button>
-                    <button
-                      onClick={() => setTerminalMode('shell')}
-                      className={cn(
-                        "px-3 py-1.5 text-xs uppercase tracking-wide",
-                        terminalMode === 'shell' ? "text-white border-b-2 border-blue-500" : "text-gray-500"
-                      )}
-                    >
-                      Alpine Shell
-                    </button>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    {terminalMode === 'shell' && IS_NATIVE_APP && alpineNeedsInstall(alpineStatus) && (
-                      <button
-                        onClick={() => setIsAlpineSetupOpen(true)}
-                        disabled={isAlpineInstalling}
-                        className="px-2 py-1 text-[11px] rounded bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-60"
-                      >
-                        {isAlpineInstalling ? 'Installing...' : 'Install Alpine'}
-                      </button>
-                    )}
-                    {terminalMode === 'console' ? (
-                      <button onClick={() => setOutput(['> Ready...'])} className="px-2 py-1 text-[11px] text-gray-500 hover:text-white">
-                        Clear
-                      </button>
-                    ) : (
-                      <button onClick={() => setShellOutput(['$ Shell ready'])} className="px-2 py-1 text-[11px] text-gray-500 hover:text-white">
-                        Clear
-                      </button>
-                    )}
-                    <button onClick={() => setTerminalOpen(false)} className="p-1 text-gray-500 hover:text-white">
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
-                </div>
-                <div className="flex-1 overflow-y-auto p-2 font-mono" style={{ fontSize: `${ideSettings.terminalFontSize}px` }}>
-                  {(terminalMode === 'console' ? output : shellOutput).map((line, index) => (
-                    <div
-                      key={index}
-                      className={cn(
-                        "whitespace-pre-wrap break-all",
-                        line.startsWith('$') ? "text-emerald-300" : line.toLowerCase().startsWith('error') ? "text-red-400" : "text-gray-300"
-                      )}
-                    >
-                      {line}
-                    </div>
-                  ))}
-                </div>
-                {terminalMode === 'shell' && (
-                  <div className="flex items-center gap-2 p-2 border-t border-gray-800">
-                    <span className="text-emerald-400 font-mono text-sm">$</span>
-                    <input
-                      type="text"
-                      value={shellCommand}
-                      onChange={(e) => setShellCommand(e.target.value)}
-                      onKeyDown={onShellInputKeyDown}
-                      placeholder={isShellRunning ? 'Command running...' : 'Type a command (Alpine Linux)...'}
-                      disabled={isShellRunning}
-                      className="flex-1 bg-transparent text-sm font-mono text-gray-200 focus:outline-none placeholder:text-gray-600"
-                    />
-                    {isShellRunning ? (
-                      <button onClick={stopShellCommand} className="px-2 py-1 rounded text-[11px] bg-red-600/20 text-red-300 border border-red-600/40">
-                        Stop
-                      </button>
-                    ) : (
-                      <button
-                        onClick={runShellCommand}
-                        disabled={!shellCommand.trim()}
-                        className="px-2 py-1 rounded text-[11px] bg-blue-600/20 text-blue-300 border border-blue-500/40 disabled:opacity-40"
-                      >
-                        Run
-                      </button>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
+            {terminalPanel}
 
             {/* Status Bar */}
             <div className="h-6 flex items-center justify-between px-3 text-[11px] text-white flex-shrink-0" style={{ backgroundColor: statusBarColor }}>

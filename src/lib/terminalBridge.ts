@@ -124,6 +124,44 @@ export async function runTerminalCommand(
   return { output, code: null };
 }
 
+const shellQuote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
+
+/**
+ * Copies project files into the Alpine rootfs (default /root) so shell
+ * commands like `python3 main.py` see the same files as the editor.
+ */
+export async function syncFilesToAlpine(
+  files: Array<{ path: string; content: string }>,
+  dest = '/root',
+  onLine?: (line: string) => void,
+): Promise<boolean> {
+  if (!isNativeTerminal() || files.length === 0) return false;
+  const marker = `__VELO_SYNC_${Date.now().toString(36)}__`;
+  const parts: string[] = ['set -e'];
+  for (const file of files) {
+    const clean = file.path.replace(/^\/+/, '');
+    if (!clean || clean.includes('..')) continue;
+    const target = `${dest}/${clean}`;
+    const dir = target.slice(0, target.lastIndexOf('/'));
+    if (dir) parts.push(`mkdir -p ${shellQuote(dir)}`);
+    const body = file.content.endsWith('\n') || file.content === '' ? file.content : `${file.content}\n`;
+    parts.push(`cat > ${shellQuote(target)} <<${shellQuote(marker)}\n${body}${marker}`);
+  }
+  parts.push(`echo "[sync] ${files.length} file(s) copied to ${dest}"`);
+  const { code } = await runTerminalCommand(parts.join('\n'), onLine, 60_000);
+  return code === 0;
+}
+
+/** Saves a file into the phone's shared Downloads folder (native only). */
+export async function exportFileToDevice(
+  fileName: string,
+  content: string,
+): Promise<string | null> {
+  if (!isNativeTerminal()) return null;
+  const { location } = await VeloTerminal.exportFile({ fileName, content });
+  return location;
+}
+
 export async function pollTerminalJob(id: string): Promise<TerminalJobPoll | null> {
   if (isNativeTerminal()) {
     try {
