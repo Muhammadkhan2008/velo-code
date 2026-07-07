@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Terminal, 
@@ -6,7 +6,6 @@ import {
   Smartphone,
   Monitor,
   Apple,
-  Linux,
   Shield,
   Settings, 
   Folder, 
@@ -29,8 +28,22 @@ import {
   Bug,
   FilePlus,
   Pencil,
-  Trash2
+  Trash2,
+  Maximize2,
+  Minimize2
 } from 'lucide-react';
+import {
+  getTerminalStatus,
+  installAlpine,
+  runTerminalCommand,
+  startTerminalJob,
+  pollTerminalJob,
+  stopTerminalJob,
+  removeTerminalJob,
+  syncFilesToAlpine,
+  exportFileToDevice,
+} from './lib/terminalBridge';
+import type { TerminalStatus } from 'velo-terminal';
 import CodeMirror, { ReactCodeMirrorRef } from '@uiw/react-codemirror';
 import { javascript } from '@codemirror/lang-javascript';
 import { python } from '@codemirror/lang-python';
@@ -58,6 +71,7 @@ import { Project, File } from './types';
 import { cn } from './lib/utils';
 import { EditorView } from '@codemirror/view';
 import { vscodeLight } from '@uiw/codemirror-theme-vscode';
+import { Capacitor } from '@capacitor/core';
 import { runInBrowser } from './extensions/browserRunners';
 import { EXTENSION_CATALOG, DEFAULT_EXTENSION_STATE, getRunnerExtensionIdForLanguage } from './extensions/catalog';
 import { ResolvedExtensionEntry, ExtensionStateMap } from './extensions/types';
@@ -88,7 +102,8 @@ type AgentAction =
   | { type: 'update_file'; path: string; content: string }
   | { type: 'rename_file'; path: string; newPath: string }
   | { type: 'delete_file'; path: string }
-  | { type: 'open_file'; path: string };
+  | { type: 'open_file'; path: string }
+  | { type: 'run_command'; command: string };
 
 interface BoilerplateSnippet {
   id: string;
@@ -105,6 +120,11 @@ interface IdeSettings {
   autoSave: boolean;
   defaultTerminalMode: 'console' | 'shell';
   editorTheme: 'vscode-dark' | 'vscode-light';
+  aiProvider: 'gemini' | 'custom';
+  geminiApiKey: string;
+  customApiBaseUrl: string;
+  customApiModel: string;
+  customApiKey: string;
 }
 
 const DEFAULT_SETTINGS: IdeSettings = {
@@ -114,7 +134,24 @@ const DEFAULT_SETTINGS: IdeSettings = {
   autoSave: false,
   defaultTerminalMode: 'console',
   editorTheme: 'vscode-dark',
+  aiProvider: 'gemini',
+  geminiApiKey: '',
+  customApiBaseUrl: '',
+  customApiModel: '',
+  customApiKey: '',
 };
+
+function loadStoredState<T extends object>(key: string, defaults: T): T {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (raw) return { ...defaults, ...(JSON.parse(raw) as Partial<T>) };
+  } catch {
+    // ignore corrupted local state
+  }
+  return defaults;
+}
+
+const IS_NATIVE_APP = Capacitor.isNativePlatform();
 
 const LANGUAGE_OPTIONS = [
   'javascript', 'typescript', 'python', 'html', 'css', 'java', 'cpp', 'c', 'csharp', 'kotlin',
@@ -226,6 +263,13 @@ export default function App() {
   const [isShellRunning, setIsShellRunning] = useState(false);
   const [shellHistory, setShellHistory] = useState<string[]>([]);
   const [shellHistoryIndex, setShellHistoryIndex] = useState<number>(-1);
+  const [alpineStatus, setAlpineStatus] = useState<TerminalStatus | null>(null);
+  const [isAlpineSetupOpen, setIsAlpineSetupOpen] = useState(false);
+  const [isAlpineInstalling, setIsAlpineInstalling] = useState(false);
+  const [pendingShellCommand, setPendingShellCommand] = useState<string | null>(null);
+  const [isTerminalFullscreen, setIsTerminalFullscreen] = useState(false);
+  const [isSaveDialogOpen, setIsSaveDialogOpen] = useState(false);
+  const [extensionDetailId, setExtensionDetailId] = useState<string | null>(null);
   const [aiChatOpen, setAiChatOpen] = useState(false);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
   const [commandQuery, setCommandQuery] = useState('');
@@ -235,13 +279,15 @@ export default function App() {
   const [activeTopMenu, setActiveTopMenu] = useState<string | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isExtensionsOpen, setIsExtensionsOpen] = useState(false);
+  const [activeToolbarMenu, setActiveToolbarMenu] = useState<'more' | 'editor' | null>(null);
+  const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [landingView, setLandingView] = useState<'home' | 'download'>('home');
   const [explorerFilter, setExplorerFilter] = useState('');
   const [globalSearchQuery, setGlobalSearchQuery] = useState('');
   const [replaceValue, setReplaceValue] = useState('');
   const [isReplacingAll, setIsReplacingAll] = useState(false);
-  const [ideSettings, setIdeSettings] = useState<IdeSettings>(DEFAULT_SETTINGS);
-  const [extensionsState, setExtensionsState] = useState<ExtensionStateMap>(DEFAULT_EXTENSION_STATE);
+  const [ideSettings, setIdeSettings] = useState<IdeSettings>(() => loadStoredState('velo.ide.settings', DEFAULT_SETTINGS));
+  const [extensionsState, setExtensionsState] = useState<ExtensionStateMap>(() => loadStoredState('velo.ide.extensions', DEFAULT_EXTENSION_STATE));
   const [downloadingExtensionIds, setDownloadingExtensionIds] = useState<string[]>([]);
   const [code, setCode] = useState('');
   const [output, setOutput] = useState<string[]>(['> Ready...']);
@@ -263,6 +309,18 @@ export default function App() {
   const editorRef = useRef<ReactCodeMirrorRef>(null);
   const importFolderInputRef = useRef<HTMLInputElement | null>(null);
   const importFilesInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (!IS_NATIVE_APP) return;
+    getTerminalStatus()
+      .then(status => {
+        setAlpineStatus(status);
+        if (status && status.prootAvailable && !status.alpineInstalled && !status.installing) {
+          setIsAlpineSetupOpen(true);
+        }
+      })
+      .catch(() => undefined);
+  }, []);
 
   const getEffectiveContent = (file: File) => draftByFileId[file.id] ?? file.content;
 
@@ -435,6 +493,25 @@ export default function App() {
         throw new Error(`Failed to download ${manifest.name}`);
       }
       await res.text();
+
+      if (IS_NATIVE_APP && manifest.alpinePackages && manifest.alpinePackages.length > 0) {
+        const status = await refreshAlpineStatus();
+        if (alpineNeedsInstall(status)) {
+          setIsAlpineSetupOpen(true);
+          window.alert(`${manifest.name} needs the Alpine Linux terminal. Install Alpine first (one-time download), then install this extension again.`);
+          return;
+        }
+        const installCmd = `apk update && apk add ${manifest.alpinePackages.join(' ')}`;
+        setTerminalOpen(true);
+        setTerminalMode('shell');
+        appendShellLine(`[extension] Installing packages for ${manifest.name}...`);
+        const { code: exitCode } = await runTerminalCommand(installCmd, appendShellLine, 600_000);
+        if (exitCode !== 0) {
+          throw new Error(`Package install failed (exit ${exitCode ?? 'unknown'}). See the Alpine Shell output.`);
+        }
+        appendShellLine(`[extension] ${manifest.name} packages installed.`);
+      }
+
       setExtensionsState(prev => ({
         ...prev,
         [extensionId]: {
@@ -548,23 +625,6 @@ export default function App() {
       setSidebarOpen(true);
     }
   };
-
-  useEffect(() => {
-    try {
-      const rawSettings = window.localStorage.getItem('velo.ide.settings');
-      if (rawSettings) {
-        const parsed = JSON.parse(rawSettings) as Partial<IdeSettings>;
-        setIdeSettings(prev => ({ ...prev, ...parsed }));
-      }
-      const rawExtensions = window.localStorage.getItem('velo.ide.extensions');
-      if (rawExtensions) {
-        const parsed = JSON.parse(rawExtensions) as ExtensionStateMap;
-        setExtensionsState(prev => ({ ...prev, ...parsed }));
-      }
-    } catch {
-      // ignore corrupted local state
-    }
-  }, []);
 
   useEffect(() => {
     window.localStorage.setItem('velo.ide.settings', JSON.stringify(ideSettings));
@@ -690,6 +750,40 @@ export default function App() {
     } catch (e) {
       console.error(e);
       setIsSaving(false);
+    }
+  };
+
+  /** Ctrl+S / Save button: on the phone, ask where to save (Acode-style). */
+  const requestSave = () => {
+    if (!activeFile) return;
+    if (IS_NATIVE_APP) {
+      setIsSaveDialogOpen(true);
+    } else {
+      void handleSave();
+    }
+  };
+
+  /** Saves in the project and also exports a copy to the phone's Downloads (or a browser download on web). */
+  const saveToDevice = async () => {
+    if (!activeFile) return;
+    const content = draftByFileId[activeFile.id] ?? code;
+    await handleSave();
+    const name = activeFile.path.split('/').pop() || 'file.txt';
+    if (IS_NATIVE_APP) {
+      try {
+        const location = await exportFileToDevice(name, content);
+        window.alert(`Saved to ${location || 'Downloads'}`);
+      } catch (error: any) {
+        window.alert(`Save to phone failed: ${error.message || error}`);
+      }
+    } else {
+      const blob = new Blob([content], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = name;
+      anchor.click();
+      URL.revokeObjectURL(url);
     }
   };
 
@@ -1127,10 +1221,44 @@ export default function App() {
     const errors: string[] = [];
     let focusPath = activeFile?.path || '';
 
+    let commandsRun = 0;
+
     for (const action of actions) {
       try {
         if (action.type === 'open_file') {
           focusPath = action.path;
+          continue;
+        }
+
+        if (action.type === 'run_command') {
+          if (commandsRun >= 3) {
+            errors.push(`Command skipped (max 3 per request): ${action.command}`);
+            continue;
+          }
+          commandsRun += 1;
+
+          if (IS_NATIVE_APP) {
+            const status = await refreshAlpineStatus();
+            if (alpineNeedsInstall(status)) {
+              setIsAlpineSetupOpen(true);
+              errors.push(`Command needs Alpine (not installed yet): ${action.command}`);
+              continue;
+            }
+            await syncProjectToAlpine();
+          }
+
+          setMessages(prev => [...prev, { role: 'ai', text: `Running command:\n$ ${action.command}` }]);
+          setTerminalOpen(true);
+          setTerminalMode('shell');
+          const { output: cmdOutput, code: exitCode } = await runTerminalCommand(action.command, appendShellLine, 180_000);
+          const visible = cmdOutput.filter(line => line !== `$ ${action.command}`);
+          const tail = visible.slice(-12).join('\n').trim() || '(no output)';
+          setMessages(prev => [...prev, { role: 'ai', text: `${tail}\n\n> exit code: ${exitCode ?? 'unknown'}` }]);
+          if (exitCode !== 0) {
+            errors.push(`Command failed (exit ${exitCode ?? 'unknown'}): ${action.command}`);
+          } else {
+            applied += 1;
+          }
           continue;
         }
 
@@ -1282,6 +1410,94 @@ export default function App() {
     }
   };
 
+  const appendShellLine = (line: string) => setShellOutput(prev => [...prev, line]);
+
+  const refreshAlpineStatus = async (): Promise<TerminalStatus | null> => {
+    const status = await getTerminalStatus();
+    setAlpineStatus(status);
+    return status;
+  };
+
+  const alpineNeedsInstall = (status: TerminalStatus | null) =>
+    !!status && status.prootAvailable && !status.alpineInstalled;
+
+  /** Copies the open project's files into Alpine's /root so shell commands see them. */
+  const syncProjectToAlpine = async (announce = false): Promise<boolean> => {
+    if (!IS_NATIVE_APP || !activeProject || files.length === 0) return false;
+    const status = alpineStatus?.alpineInstalled ? alpineStatus : await refreshAlpineStatus();
+    if (!status?.alpineInstalled) {
+      if (announce) appendShellLine('[sync] Install Alpine first to sync project files.');
+      return false;
+    }
+    try {
+      const payload = files.map(file => ({
+        path: file.path,
+        content: draftByFileId[file.id] ?? file.content,
+      }));
+      return await syncFilesToAlpine(payload, '/root', line => {
+        if (line.startsWith('[sync]')) appendShellLine(line);
+      });
+    } catch (error: any) {
+      appendShellLine(`Error: file sync failed: ${error.message || error}`);
+      return false;
+    }
+  };
+
+  /** Lists compilers/runtimes installed inside Alpine in the shell output. */
+  const showInstalledRuntimes = async () => {
+    setTerminalOpen(true);
+    setTerminalMode('shell');
+    appendShellLine('$ checking installed runtimes...');
+    const probe = 'for c in python3 node npm gcc g++ go rustc cargo javac java php ruby perl git make cmake; do v=$("$c" --version 2>/dev/null | head -n 1); [ -n "$v" ] && echo "  $c -> $v"; done; echo "[runtimes] done - add more with: apk add <package>"';
+    await runTerminalCommand(probe, line => {
+      if (line.startsWith('  ') || line.startsWith('[runtimes]')) appendShellLine(line);
+    }, 60_000);
+  };
+
+  const startAlpineInstall = async (): Promise<boolean> => {
+    if (isAlpineInstalling) return false;
+    setIsAlpineInstalling(true);
+    setTerminalOpen(true);
+    setTerminalMode('shell');
+    try {
+      const status = await installAlpine(appendShellLine);
+      setAlpineStatus(status);
+      if (status?.alpineInstalled) {
+        appendShellLine('[alpine] Installed permanently. Full Linux shell ready (try: apk add python3).');
+        setIsAlpineSetupOpen(false);
+        return true;
+      }
+      appendShellLine('[alpine] Install did not complete. Tap Install to retry.');
+      return false;
+    } catch (error: any) {
+      appendShellLine(`Error: Alpine install failed: ${error.message || error}`);
+      return false;
+    } finally {
+      setIsAlpineInstalling(false);
+    }
+  };
+
+  const confirmAlpineInstall = async () => {
+    const ok = await startAlpineInstall();
+    const pending = pendingShellCommand;
+    setPendingShellCommand(null);
+    if (ok && pending) {
+      await executeShellCommand(pending);
+    }
+  };
+
+  const executeShellCommand = async (command: string) => {
+    try {
+      const jobId = await startTerminalJob(command);
+      setActiveTerminalJobId(jobId);
+      setIsShellRunning(true);
+    } catch (error: any) {
+      setShellOutput(prev => [...prev, `Error: ${error.message || 'Command failed to start'}`]);
+      setIsShellRunning(false);
+      setActiveTerminalJobId(null);
+    }
+  };
+
   const runShellCommand = async () => {
     const command = shellCommand.trim();
     if (!command || isShellRunning) return;
@@ -1293,23 +1509,26 @@ export default function App() {
     setShellHistory(prev => (prev[0] === command ? prev : [command, ...prev].slice(0, 100)));
     setShellHistoryIndex(-1);
 
-    try {
-      const res = await fetch('/api/terminal/jobs', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to start command');
+    if (IS_NATIVE_APP) {
+      try {
+        const status = await refreshAlpineStatus();
+        if (alpineNeedsInstall(status)) {
+          if (status?.installing || isAlpineInstalling) {
+            appendShellLine('[alpine] Alpine is still installing... command will not run yet.');
+            return;
+          }
+          setPendingShellCommand(command);
+          setIsAlpineSetupOpen(true);
+          appendShellLine('[alpine] Alpine Linux is not installed yet - confirm the one-time download to continue.');
+          return;
+        }
+      } catch {
+        // status check failed; fall through and let the job surface any error
       }
-      setActiveTerminalJobId(data.jobId);
-      setIsShellRunning(true);
-    } catch (error: any) {
-      setShellOutput(prev => [...prev, `Error: ${error.message || 'Command failed to start'}`]);
-      setIsShellRunning(false);
-      setActiveTerminalJobId(null);
+      await syncProjectToAlpine();
     }
+
+    await executeShellCommand(command);
   };
 
   const onShellInputKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
@@ -1343,7 +1562,7 @@ export default function App() {
   const stopShellCommand = async () => {
     if (!activeTerminalJobId) return;
     try {
-      await fetch(`/api/terminal/jobs/${activeTerminalJobId}/stop`, { method: 'POST' });
+      await stopTerminalJob(activeTerminalJobId);
     } catch {
       // no-op, polling will settle with current process state
     }
@@ -1475,9 +1694,10 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
         })
       });
       const data = await res.json();
-      setMessages(prev => [...prev, { role: 'ai', text: data.completion || 'I could not generate a response.' }]);
+      setMessages(prev => [...prev, { role: 'ai', text: data.completion || data.error || 'I could not generate a response.' }]);
     } catch (e) {
-      setMessages(prev => [...prev, { role: 'ai', text: 'Error connecting to AI agent.' }]);
+      const message = e instanceof Error && e.message ? e.message : 'Error connecting to AI agent.';
+      setMessages(prev => [...prev, { role: 'ai', text: message }]);
     } finally {
       setIsAiLoading(false);
     }
@@ -1565,6 +1785,11 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
         openCommandPalette();
       }
 
+      if (hasModifier && event.shiftKey && key === 'n') {
+        event.preventDefault();
+        window.open(window.location.href, '_blank');
+      }
+
       if (hasModifier && key === 'n' && !event.shiftKey) {
         event.preventDefault();
         if (activeProject) {
@@ -1581,7 +1806,12 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
 
       if (hasModifier && key === 's') {
         event.preventDefault();
-        handleSave();
+        requestSave();
+      }
+
+      if (hasModifier && key === '`') {
+        event.preventDefault();
+        setTerminalOpen(prev => !prev);
       }
 
       if (hasModifier && event.shiftKey && key === 'f') {
@@ -1604,15 +1834,26 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
         openBoilerplatePicker();
       }
 
+      const target = event.target as HTMLElement | null;
+      const isEditing = !!target && (
+        target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable
+      );
+
+      if (event.altKey && event.key === 'ArrowLeft' && !isEditing) {
+        event.preventDefault();
+        setActiveProject(null);
+      }
+
       if (event.key === 'Escape') {
         setIsCommandPaletteOpen(false);
         setActiveTopMenu(null);
+        setIsTerminalFullscreen(false);
       }
     };
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [activeProject, createFile, createProject, handleSave, openSearchView, openBoilerplatePicker]);
+  }, [activeProject, createFile, createProject, requestSave, openSearchView, openBoilerplatePicker]);
 
   useEffect(() => {
     if (!activeTerminalJobId) return;
@@ -1620,16 +1861,13 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
 
     const poll = async () => {
       try {
-        const res = await fetch(`/api/terminal/jobs/${activeTerminalJobId}`);
-        const data = await res.json();
-        if (!res.ok) return;
-        if (isCancelled) return;
+        const data = await pollTerminalJob(activeTerminalJobId);
+        if (!data || isCancelled) return;
 
-        setShellOutput(Array.isArray(data.output) ? data.output : []);
-        const done = Boolean(data.done);
-        setIsShellRunning(!done);
-        if (done) {
-          fetch(`/api/terminal/jobs/${activeTerminalJobId}`, { method: 'DELETE' }).catch(() => undefined);
+        setShellOutput(data.output);
+        setIsShellRunning(!data.done);
+        if (data.done) {
+          removeTerminalJob(activeTerminalJobId).catch(() => undefined);
           setActiveTerminalJobId(null);
         }
       } catch {
@@ -1946,6 +2184,127 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
     setActiveTopMenu(null);
   };
 
+  const terminalPanel = terminalOpen ? (
+    <div className={cn(
+      "bg-[#0d1117] flex flex-col",
+      isTerminalFullscreen
+        ? "fixed inset-0 z-[70]"
+        : "h-56 md:h-64 border-t border-gray-800 flex-shrink-0"
+    )}>
+      <div className="flex items-center justify-between px-2 border-b border-gray-800">
+        <div className="flex items-center">
+          <button
+            onClick={() => setTerminalMode('console')}
+            className={cn(
+              "px-3 py-1.5 text-xs uppercase tracking-wide",
+              terminalMode === 'console' ? "text-white border-b-2 border-blue-500" : "text-gray-500"
+            )}
+          >
+            Console
+          </button>
+          <button
+            onClick={() => { setTerminalMode('shell'); void syncProjectToAlpine(); }}
+            className={cn(
+              "px-3 py-1.5 text-xs uppercase tracking-wide",
+              terminalMode === 'shell' ? "text-white border-b-2 border-blue-500" : "text-gray-500"
+            )}
+          >
+            Alpine Shell
+          </button>
+        </div>
+        <div className="flex items-center gap-1">
+          {terminalMode === 'shell' && IS_NATIVE_APP && alpineNeedsInstall(alpineStatus) && (
+            <button
+              onClick={() => setIsAlpineSetupOpen(true)}
+              disabled={isAlpineInstalling}
+              className="px-2 py-1 text-[11px] rounded bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-60"
+            >
+              {isAlpineInstalling ? 'Installing...' : 'Install Alpine'}
+            </button>
+          )}
+          {terminalMode === 'shell' && IS_NATIVE_APP && alpineStatus?.alpineInstalled && (
+            <>
+              <button
+                onClick={() => { void syncProjectToAlpine(true); }}
+                disabled={!activeProject}
+                className="px-2 py-1 text-[11px] text-gray-500 hover:text-white disabled:opacity-40"
+                title="Copy project files into Alpine /root"
+              >
+                Sync Files
+              </button>
+              <button
+                onClick={() => { void showInstalledRuntimes(); }}
+                className="px-2 py-1 text-[11px] text-gray-500 hover:text-white"
+                title="List installed compilers and runtimes"
+              >
+                Runtimes
+              </button>
+            </>
+          )}
+          {terminalMode === 'console' ? (
+            <button onClick={() => setOutput(['> Ready...'])} className="px-2 py-1 text-[11px] text-gray-500 hover:text-white">
+              Clear
+            </button>
+          ) : (
+            <button onClick={() => setShellOutput(['$ Shell ready'])} className="px-2 py-1 text-[11px] text-gray-500 hover:text-white">
+              Clear
+            </button>
+          )}
+          <button
+            onClick={() => setIsTerminalFullscreen(prev => !prev)}
+            className="p-1 text-gray-500 hover:text-white"
+            title={isTerminalFullscreen ? 'Exit full screen' : 'Full screen'}
+          >
+            {isTerminalFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+          </button>
+          <button onClick={() => { setTerminalOpen(false); setIsTerminalFullscreen(false); }} className="p-1 text-gray-500 hover:text-white">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+      <div className="flex-1 overflow-y-auto p-2 font-mono" style={{ fontSize: `${ideSettings.terminalFontSize}px` }}>
+        {(terminalMode === 'console' ? output : shellOutput).map((line, index) => (
+          <div
+            key={index}
+            className={cn(
+              "whitespace-pre-wrap break-all",
+              line.startsWith('$') ? "text-emerald-300" : line.toLowerCase().startsWith('error') ? "text-red-400" : "text-gray-300"
+            )}
+          >
+            {line}
+          </div>
+        ))}
+      </div>
+      {terminalMode === 'shell' && (
+        <div className="flex items-center gap-2 p-2 border-t border-gray-800">
+          <span className="text-emerald-400 font-mono text-sm">$</span>
+          <input
+            type="text"
+            value={shellCommand}
+            onChange={(e) => setShellCommand(e.target.value)}
+            onKeyDown={onShellInputKeyDown}
+            placeholder={isShellRunning ? 'Command running...' : 'Type a command (Alpine Linux)...'}
+            disabled={isShellRunning}
+            className="flex-1 bg-transparent text-sm font-mono text-gray-200 focus:outline-none placeholder:text-gray-600"
+          />
+          {isShellRunning ? (
+            <button onClick={stopShellCommand} className="px-2 py-1 rounded text-[11px] bg-red-600/20 text-red-300 border border-red-600/40">
+              Stop
+            </button>
+          ) : (
+            <button
+              onClick={runShellCommand}
+              disabled={!shellCommand.trim()}
+              className="px-2 py-1 rounded text-[11px] bg-blue-600/20 text-blue-300 border border-blue-500/40 disabled:opacity-40"
+            >
+              Run
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  ) : null;
+
   return (
     <div className="flex h-screen w-full bg-[#0d1117] text-gray-300 font-sans overflow-hidden">
       <input
@@ -2009,7 +2368,7 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
           <Settings className="w-6 h-6" />
         </button>
         <div className="flex-1" />
-        <button className="p-2 text-gray-500 hover:text-white">
+        <button onClick={() => setIsProfileOpen(true)} className="p-2 text-gray-500 hover:text-white" title="Profile">
           <div className="w-6 h-6 rounded-full bg-blue-600 flex items-center justify-center text-xs text-white">U</div>
         </button>
       </div>
@@ -2137,6 +2496,80 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
                 </button>
               </div>
               <div className="p-4 space-y-4 max-h-[72vh] overflow-y-auto">
+                <div className="space-y-2">
+                  <div className="text-sm text-gray-300">AI Provider</div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setIdeSettings(prev => ({ ...prev, aiProvider: 'gemini' }))}
+                      className={cn(
+                        "px-2 py-1.5 rounded-lg text-xs font-medium border",
+                        ideSettings.aiProvider === 'gemini'
+                          ? "bg-blue-600/20 border-blue-500 text-blue-400"
+                          : "bg-[#0d1117] border-gray-700 text-gray-400 hover:border-gray-600"
+                      )}
+                    >
+                      Gemini
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIdeSettings(prev => ({ ...prev, aiProvider: 'custom' }))}
+                      className={cn(
+                        "px-2 py-1.5 rounded-lg text-xs font-medium border",
+                        ideSettings.aiProvider === 'custom'
+                          ? "bg-blue-600/20 border-blue-500 text-blue-400"
+                          : "bg-[#0d1117] border-gray-700 text-gray-400 hover:border-gray-600"
+                      )}
+                    >
+                      Custom (OpenAI-compatible)
+                    </button>
+                  </div>
+                  {ideSettings.aiProvider === 'gemini' ? (
+                    <>
+                      <input
+                        type="password"
+                        value={ideSettings.geminiApiKey}
+                        onChange={(e) => setIdeSettings(prev => ({ ...prev, geminiApiKey: e.target.value }))}
+                        placeholder="Paste your Gemini API key..."
+                        autoComplete="off"
+                        className="w-full bg-[#0d1117] border border-gray-700 rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500"
+                      />
+                      <div className="text-[11px] text-gray-500">
+                        Get a free key at aistudio.google.com — stored only on this device.
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <input
+                        type="url"
+                        value={ideSettings.customApiBaseUrl}
+                        onChange={(e) => setIdeSettings(prev => ({ ...prev, customApiBaseUrl: e.target.value }))}
+                        placeholder="Base URL, e.g. https://openrouter.ai/api/v1"
+                        autoComplete="off"
+                        className="w-full bg-[#0d1117] border border-gray-700 rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500"
+                      />
+                      <input
+                        type="text"
+                        value={ideSettings.customApiModel}
+                        onChange={(e) => setIdeSettings(prev => ({ ...prev, customApiModel: e.target.value }))}
+                        placeholder="Model, e.g. openai/gpt-4o-mini"
+                        autoComplete="off"
+                        className="w-full bg-[#0d1117] border border-gray-700 rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500"
+                      />
+                      <input
+                        type="password"
+                        value={ideSettings.customApiKey}
+                        onChange={(e) => setIdeSettings(prev => ({ ...prev, customApiKey: e.target.value }))}
+                        placeholder="API key"
+                        autoComplete="off"
+                        className="w-full bg-[#0d1117] border border-gray-700 rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500"
+                      />
+                      <div className="text-[11px] text-gray-500">
+                        Works with any OpenAI-compatible API (OpenRouter, OpenAI, Groq, Together, local servers). Stored only on this device.
+                      </div>
+                    </>
+                  )}
+                </div>
                 <label className="flex items-center justify-between gap-4 text-sm">
                   <span className="text-gray-300">Word Wrap</span>
                   <input
@@ -2153,6 +2586,27 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
                     onChange={(e) => setIdeSettings(prev => ({ ...prev, autoSave: e.target.checked }))}
                   />
                 </label>
+                <div className="space-y-2">
+                  <div className="text-sm text-gray-300">Keyboard Shortcuts</div>
+                  <div className="rounded-lg border border-gray-800 bg-[#0d1117] p-2 text-[11px] space-y-1">
+                    {[
+                      ['Ctrl+S', 'Save (asks where on the phone)'],
+                      ['Ctrl+N', 'New file / project'],
+                      ['Ctrl+Shift+N', 'New window'],
+                      ['Ctrl+P', 'Command palette'],
+                      ['Ctrl+Shift+F', 'Search in project'],
+                      ['Alt+Shift+F', 'Format document'],
+                      ['Ctrl+`', 'Toggle terminal'],
+                      ['Alt+\u2190', 'Back to home'],
+                      ['Ctrl+,', 'Settings'],
+                    ].map(([keys, label]) => (
+                      <div key={keys} className="flex items-center justify-between gap-3">
+                        <span className="text-gray-400">{label}</span>
+                        <code className="text-gray-300 bg-[#161b22] border border-gray-700 rounded px-1.5 py-0.5">{keys}</code>
+                      </div>
+                    ))}
+                  </div>
+                </div>
                 <div className="space-y-2">
                   <div className="text-sm text-gray-300">Editor Font Size: {ideSettings.editorFontSize}px</div>
                   <input
@@ -2245,6 +2699,247 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
         )}
       </AnimatePresence>
 
+      {/* Profile Modal */}
+      <AnimatePresence>
+        {isProfileOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[58] bg-black/60 backdrop-blur-sm p-4 md:p-8"
+            onClick={() => setIsProfileOpen(false)}
+          >
+            <motion.div
+              initial={{ y: -16, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              exit={{ y: -16, opacity: 0 }}
+              className="max-w-md mx-auto bg-[#161b22] border border-gray-700 rounded-xl shadow-2xl overflow-hidden"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="p-4 border-b border-gray-800 flex items-center justify-between">
+                <h3 className="text-lg text-white font-semibold">Profile</h3>
+                <button onClick={() => setIsProfileOpen(false)} className="p-1 rounded hover:bg-[#21262d] text-gray-400">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <div className="p-4 space-y-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-12 h-12 rounded-full bg-blue-600 flex items-center justify-center text-lg text-white font-semibold">U</div>
+                  <div>
+                    <div className="text-white font-medium">Local User</div>
+                    <div className="text-xs text-gray-500">Working on this device</div>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-center">
+                  <div className="rounded-lg border border-gray-700 bg-[#0d1117] p-3">
+                    <div className="text-xl text-white font-semibold">{projects.length}</div>
+                    <div className="text-[11px] text-gray-500 uppercase tracking-wide">Projects</div>
+                  </div>
+                  <div className="rounded-lg border border-gray-700 bg-[#0d1117] p-3">
+                    <div className="text-xl text-white font-semibold">{(ideSettings.aiProvider === 'custom' ? ideSettings.customApiKey : ideSettings.geminiApiKey) ? 'On' : 'Off'}</div>
+                    <div className="text-[11px] text-gray-500 uppercase tracking-wide">AI ({ideSettings.aiProvider === 'custom' ? 'Custom' : 'Gemini'})</div>
+                  </div>
+                </div>
+                <button
+                  onClick={() => { setIsProfileOpen(false); openSettingsPanel(); }}
+                  className="w-full px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium"
+                >
+                  Open Settings
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Alpine Setup Modal */}
+      <AnimatePresence>
+        {isAlpineSetupOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[62] bg-black/60 backdrop-blur-sm p-4 md:p-8 flex items-center justify-center"
+          >
+            <motion.div
+              initial={{ y: -16, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              exit={{ y: -16, opacity: 0 }}
+              className="max-w-md w-full bg-[#161b22] border border-gray-700 rounded-xl shadow-2xl overflow-hidden"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="p-4 border-b border-gray-800 flex items-center justify-between">
+                <h3 className="text-lg text-white font-semibold">Terminal not installed</h3>
+                {!isAlpineInstalling && (
+                  <button onClick={() => { setIsAlpineSetupOpen(false); setPendingShellCommand(null); }} className="p-1 rounded hover:bg-[#21262d] text-gray-400">
+                    <X className="w-5 h-5" />
+                  </button>
+                )}
+              </div>
+              <div className="p-4 space-y-4">
+                <p className="text-sm text-gray-300">
+                  Velo Code uses a real Alpine Linux terminal for <span className="text-white">apk</span>, compilers and language runtimes.
+                  Download it once (a few MB) and it stays installed permanently — no re-download needed.
+                </p>
+                {isAlpineInstalling ? (
+                  <div className="rounded-lg border border-gray-700 bg-[#0d1117] p-3 text-xs text-gray-400 font-mono max-h-32 overflow-y-auto">
+                    {shellOutput.filter(line => line.startsWith('[alpine]')).slice(-4).map((line, index) => (
+                      <div key={index}>{line}</div>
+                    ))}
+                    <div className="text-blue-400">Installing... keep the app open.</div>
+                  </div>
+                ) : (
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => { void confirmAlpineInstall(); }}
+                      className="flex-1 px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium"
+                    >
+                      Download &amp; Install
+                    </button>
+                    <button
+                      onClick={() => { setIsAlpineSetupOpen(false); setPendingShellCommand(null); }}
+                      className="px-3 py-2 rounded-lg bg-[#21262d] hover:bg-[#30363d] text-gray-300 text-sm"
+                    >
+                      Not now
+                    </button>
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Save Location Dialog */}
+      <AnimatePresence>
+        {isSaveDialogOpen && activeFile && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[63] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+            onClick={() => setIsSaveDialogOpen(false)}
+          >
+            <motion.div
+              initial={{ y: -16, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              exit={{ y: -16, opacity: 0 }}
+              className="w-full max-w-sm bg-[#161b22] border border-gray-700 rounded-xl shadow-2xl overflow-hidden"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="p-4 border-b border-gray-800 flex items-center justify-between">
+                <h3 className="text-white font-semibold text-sm">Save {activeFile.path.split('/').pop()}</h3>
+                <button onClick={() => setIsSaveDialogOpen(false)} className="p-1 rounded hover:bg-[#21262d] text-gray-400">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="p-4 space-y-2">
+                <p className="text-xs text-gray-400">Where do you want to save this file?</p>
+                <button
+                  onClick={() => { setIsSaveDialogOpen(false); void handleSave(); }}
+                  className="w-full px-3 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium text-left"
+                >
+                  In this project
+                  <span className="block text-[11px] font-normal text-blue-100/80">Stays inside Velo Code</span>
+                </button>
+                <button
+                  onClick={() => { setIsSaveDialogOpen(false); void saveToDevice(); }}
+                  className="w-full px-3 py-2.5 rounded-lg bg-[#21262d] hover:bg-[#30363d] border border-gray-700 text-gray-100 text-sm font-medium text-left"
+                >
+                  Project + phone storage
+                  <span className="block text-[11px] font-normal text-gray-400">Also copies to the Downloads folder</span>
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Extension Details Modal */}
+      <AnimatePresence>
+        {extensionDetailId && (() => {
+          const detail = extensionEntries.find(entry => entry.id === extensionDetailId);
+          if (!detail) return null;
+          return (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[61] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+              onClick={() => setExtensionDetailId(null)}
+            >
+              <motion.div
+                initial={{ y: -16, opacity: 0 }}
+                animate={{ y: 0, opacity: 1 }}
+                exit={{ y: -16, opacity: 0 }}
+                className="w-full max-w-md bg-[#161b22] border border-gray-700 rounded-xl shadow-2xl overflow-hidden"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <div className="p-4 border-b border-gray-800 flex items-center justify-between">
+                  <div>
+                    <h3 className="text-white font-semibold">{detail.name}</h3>
+                    <div className="text-[11px] uppercase tracking-wide text-blue-300 mt-0.5">{detail.category}</div>
+                  </div>
+                  <button onClick={() => setExtensionDetailId(null)} className="p-1 rounded hover:bg-[#21262d] text-gray-400">
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+                <div className="p-4 space-y-3 max-h-[60vh] overflow-y-auto">
+                  <p className="text-sm text-gray-300">{detail.description}</p>
+                  <div className="text-xs text-gray-400 space-y-1.5">
+                    <div>
+                      <span className="text-gray-500">Status: </span>
+                      {detail.enabled ? 'Enabled' : detail.installed ? 'Installed (disabled)' : 'Not installed'}
+                    </div>
+                    {detail.languages && detail.languages.length > 0 && (
+                      <div>
+                        <span className="text-gray-500">Languages: </span>
+                        {detail.languages.join(', ')}
+                      </div>
+                    )}
+                    {detail.runnerMode && detail.runnerMode !== 'none' && (
+                      <div>
+                        <span className="text-gray-500">Runs code: </span>
+                        {detail.runnerMode === 'browser' ? 'in the editor (browser engine)' : 'in the Alpine Linux terminal'}
+                      </div>
+                    )}
+                    {detail.alpinePackages && detail.alpinePackages.length > 0 && (
+                      <div className="rounded-lg border border-gray-800 bg-[#0d1117] p-2">
+                        <div className="text-gray-500 mb-1">Installs in Alpine (live in the terminal):</div>
+                        <code className="text-emerald-300">apk add {detail.alpinePackages.join(' ')}</code>
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 pt-1">
+                    <button
+                      disabled={downloadingExtensionIds.includes(detail.id)}
+                      onClick={() => toggleExtensionInstall(detail.id)}
+                      className={cn(
+                        "px-3 py-1.5 rounded text-xs border disabled:opacity-50",
+                        detail.installed
+                          ? "border-red-600/40 text-red-300 hover:bg-red-600/10"
+                          : "border-blue-500/40 text-blue-300 hover:bg-blue-500/10"
+                      )}
+                    >
+                      {downloadingExtensionIds.includes(detail.id)
+                        ? 'Downloading...'
+                        : (detail.installed ? 'Uninstall' : 'Install')}
+                    </button>
+                    <button
+                      disabled={!detail.installed}
+                      onClick={() => toggleExtensionEnable(detail.id)}
+                      className="px-3 py-1.5 rounded text-xs border border-gray-700 text-gray-200 disabled:opacity-40 hover:bg-[#21262d]"
+                    >
+                      {detail.enabled ? 'Disable' : 'Enable'}
+                    </button>
+                  </div>
+                </div>
+              </motion.div>
+            </motion.div>
+          );
+        })()}
+      </AnimatePresence>
+
       {/* Extensions Modal */}
       <AnimatePresence>
         {isExtensionsOpen && (
@@ -2272,10 +2967,10 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
                 {extensionEntries.map(extension => (
                   <div key={extension.id} className="rounded-lg border border-gray-700 bg-[#0d1117] p-3">
                     <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <div className="text-sm text-white font-medium">{extension.name}</div>
+                      <button className="text-left" onClick={() => setExtensionDetailId(extension.id)}>
+                        <div className="text-sm text-white font-medium hover:underline">{extension.name}</div>
                         <div className="text-[11px] uppercase tracking-wide text-blue-300 mt-0.5">{extension.category}</div>
-                      </div>
+                      </button>
                       <div className={cn(
                         "text-[10px] px-2 py-0.5 rounded-full border",
                         extension.enabled
@@ -2307,6 +3002,12 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
                         className="px-2.5 py-1.5 rounded text-xs border border-gray-700 text-gray-200 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-[#21262d]"
                       >
                         {extension.enabled ? 'Disable' : 'Enable'}
+                      </button>
+                      <button
+                        onClick={() => setExtensionDetailId(extension.id)}
+                        className="px-2.5 py-1.5 rounded text-xs border border-gray-700 text-gray-400 hover:text-white hover:bg-[#21262d]"
+                      >
+                        Details
                       </button>
                     </div>
                   </div>
@@ -2490,6 +3191,40 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
               )}
             </div>
 
+            {/* Mobile Activity Row */}
+            <div className="flex md:hidden items-center justify-around px-2 py-1.5 border-b border-gray-800 bg-[#11161d]">
+              <button
+                onClick={openExplorerView}
+                className={cn("p-2 rounded-md", sidebarView === 'explorer' ? "text-white bg-gray-800" : "text-gray-500")}
+                title="Explorer"
+              >
+                <Folder className="w-5 h-5" />
+              </button>
+              <button
+                onClick={openSearchView}
+                className={cn("p-2 rounded-md", sidebarView === 'search' ? "text-white bg-gray-800" : "text-gray-500")}
+                title="Search"
+              >
+                <Search className="w-5 h-5" />
+              </button>
+              <button
+                onClick={activeProject ? createFile : createProject}
+                className="p-2 rounded-md text-gray-500 hover:text-white"
+                title={activeProject ? 'New File' : 'New Project'}
+              >
+                <FilePlus className="w-5 h-5" />
+              </button>
+              <button onClick={openExtensionsPanel} className="p-2 rounded-md text-gray-500 hover:text-white" title="Extensions">
+                <Cpu className="w-5 h-5" />
+              </button>
+              <button onClick={openSettingsPanel} className="p-2 rounded-md text-gray-500 hover:text-white" title="Settings">
+                <Settings className="w-5 h-5" />
+              </button>
+              <button onClick={() => setIsProfileOpen(true)} className="p-2 rounded-md" title="Profile">
+                <div className="w-5 h-5 rounded-full bg-blue-600 flex items-center justify-center text-[10px] text-white">U</div>
+              </button>
+            </div>
+
             <div className="flex-1 overflow-y-auto p-2">
               {!activeProject ? (
                 <div className="space-y-4 p-2">
@@ -2531,9 +3266,132 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
                   </div>
                 </div>
               ) : (
+                sidebarView === 'explorer' ? (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between px-1">
+                      <button
+                        onClick={() => setActiveProject(null)}
+                        className="flex items-center gap-1 text-xs text-gray-400 hover:text-white"
+                      >
+                        <ArrowLeft className="w-3.5 h-3.5" />
+                        Projects
+                      </button>
+                      <div className="flex items-center gap-1">
+                        <button onClick={createFile} className="p-1 hover:bg-gray-800 rounded text-gray-400 hover:text-white" title="New File">
+                          <FilePlus className="w-4 h-4" />
+                        </button>
+                        <button onClick={triggerImportFiles} className="p-1 hover:bg-gray-800 rounded text-gray-400 hover:text-white" title="Import Files">
+                          <Plus className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                    <div className="px-1">
+                      <input
+                        type="text"
+                        value={explorerFilter}
+                        onChange={(e) => setExplorerFilter(e.target.value)}
+                        placeholder="Filter files..."
+                        className="w-full bg-[#0d1117] border border-gray-700 rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500"
+                      />
+                    </div>
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 px-1 pt-1 truncate">
+                      {activeProject.name}
+                    </div>
+                    <div className="space-y-0.5">
+                      {filteredExplorerFiles.map(file => (
+                        <div
+                          key={file.id}
+                          onClick={() => openFile(file, true)}
+                          className={cn(
+                            "group flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer",
+                            activeFile?.id === file.id ? "bg-[#21262d] text-white" : "text-gray-300 hover:bg-[#1c2129]"
+                          )}
+                        >
+                          <FileIcon fileName={file.path} />
+                          <span className="flex-1 truncate text-sm">{file.path}</span>
+                          {draftByFileId[file.id] !== undefined && (
+                            <span className="w-2 h-2 rounded-full bg-blue-400 flex-shrink-0" title="Unsaved changes" />
+                          )}
+                          <button
+                            onClick={(e) => { e.stopPropagation(); renameFile(file); }}
+                            className="opacity-0 group-hover:opacity-100 p-0.5 text-gray-500 hover:text-white"
+                            title="Rename"
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); deleteFile(file); }}
+                            className="opacity-0 group-hover:opacity-100 p-0.5 text-gray-500 hover:text-red-400"
+                            title="Delete"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ))}
+                      {filteredExplorerFiles.length === 0 && (
+                        <div className="text-center py-6 text-gray-500 text-xs">No files found.</div>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-3 p-1">
+                    <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider">Search</h2>
+                    <input
+                      type="text"
+                      value={globalSearchQuery}
+                      onChange={(e) => setGlobalSearchQuery(e.target.value)}
+                      placeholder="Search in project..."
+                      autoFocus
+                      className="w-full bg-[#0d1117] border border-gray-700 rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500"
+                    />
+                    <input
+                      type="text"
+                      value={replaceValue}
+                      onChange={(e) => setReplaceValue(e.target.value)}
+                      placeholder="Replace with..."
+                      className="w-full bg-[#0d1117] border border-gray-700 rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500"
+                    />
+                    <button
+                      onClick={handleReplaceAll}
+                      disabled={isReplacingAll || !globalSearchQuery.trim()}
+                      className="w-full px-2 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {isReplacingAll ? 'Replacing...' : 'Replace All'}
+                    </button>
+                    <div className="space-y-1">
+                      {searchResults.map((hit, index) => (
+                        <button
+                          key={`${hit.file.id}-${hit.lineNumber}-${index}`}
+                          onClick={() => openFileAtLine(hit.file, hit.lineNumber)}
+                          className="w-full text-left px-2 py-1.5 rounded hover:bg-[#1c2129]"
+                        >
+                          <div className="flex items-center gap-2 text-xs text-gray-300">
+                            <FileIcon fileName={hit.file.path} />
+                            <span className="truncate">{hit.file.path}</span>
+                            <span className="text-gray-600">:{hit.lineNumber}</span>
+                          </div>
+                          <div className="text-[11px] text-gray-500 truncate pl-6">{hit.preview}</div>
+                        </button>
+                      ))}
+                      {globalSearchQuery.trim() && searchResults.length === 0 && (
+                        <div className="text-center py-6 text-gray-500 text-xs">No results.</div>
+                      )}
+                    </div>
+                  </div>
+                )
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Main Content */}
+      <div className="flex-1 flex flex-col min-w-0 relative">
+        {!activeProject ? (
+          <>
           <div className="flex-1 overflow-y-auto p-4 md:p-8">
             <div className="max-w-5xl mx-auto">
-              {landingView === 'home' ? (
+              {(landingView === 'home' || IS_NATIVE_APP) ? (
                 <>
                   <div className="rounded-2xl border border-gray-800 bg-gradient-to-b from-[#161b22] via-[#0f1724] to-[#0b111a] p-6 md:p-8 shadow-2xl">
                     <div className="flex flex-col items-center text-center">
@@ -2547,16 +3405,18 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
                       <p className="text-[11px] uppercase tracking-[0.24em] text-blue-300/90 mb-2">Start</p>
                       <h1 className="text-2xl md:text-3xl font-bold text-white mb-2">Welcome to VElo Code</h1>
                       <p className="text-gray-400 max-w-2xl">
-                        VS Code inspired quick start for mobile and desktop. Pick an action and start coding instantly.
+                        VS Code inspired mobile IDE with a real Alpine Linux terminal. Pick an action and start coding instantly.
                       </p>
 
-                      <button
-                        onClick={() => setLandingView('download')}
-                        className="mt-5 px-6 py-3 bg-gradient-to-r from-blue-600 to-cyan-500 hover:from-blue-500 hover:to-cyan-400 text-white rounded-xl font-semibold shadow-lg shadow-cyan-500/20 flex items-center gap-2"
-                      >
-                        <Download className="w-5 h-5" />
-                        Start With VElo Code
-                      </button>
+                      {!IS_NATIVE_APP && (
+                        <button
+                          onClick={() => setLandingView('download')}
+                          className="mt-5 px-6 py-3 bg-gradient-to-r from-blue-600 to-cyan-500 hover:from-blue-500 hover:to-cyan-400 text-white rounded-xl font-semibold shadow-lg shadow-cyan-500/20 flex items-center gap-2"
+                        >
+                          <Download className="w-5 h-5" />
+                          Start With VElo Code
+                        </button>
+                      )}
                     </div>
 
                     <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -2594,6 +3454,13 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
                       >
                         <Cpu className="w-5 h-5" />
                         Extensions
+                      </button>
+                      <button
+                        onClick={() => { setTerminalOpen(true); setTerminalMode('shell'); setIsTerminalFullscreen(true); }}
+                        className="w-full px-4 py-3 bg-[#21262d] hover:bg-[#30363d] text-gray-100 rounded-lg font-medium transition-colors border border-gray-700 flex items-center justify-center gap-2"
+                      >
+                        <Terminal className="w-5 h-5" />
+                        Terminal
                       </button>
                       <button
                         onClick={openSettingsPanel}
@@ -2645,7 +3512,7 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
                   <div className="mt-5 text-center">
                     <h2 className="text-2xl md:text-3xl font-bold text-white">Download VElo Code IDE</h2>
                     <p className="text-gray-400 mt-2 max-w-2xl mx-auto">
-                      Choose your platform package. Android and Windows offer flow is ready now. Apple/Linux variants are marked coming soon.
+                      Android APK with a built-in Alpine Linux terminal is ready now. Other platforms are marked coming soon.
                     </p>
                   </div>
 
@@ -2661,15 +3528,12 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
                       </button>
                     </div>
 
-                    <div className="rounded-xl border border-blue-500/40 bg-blue-500/10 p-4">
+                    <div className="rounded-xl border border-gray-700 bg-[#0d1117] p-4">
                       <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2 text-blue-200 font-semibold"><Monitor className="w-4 h-4" /> Windows</div>
-                        <span className="text-[10px] uppercase tracking-wide text-blue-200">EXE</span>
+                        <div className="flex items-center gap-2 text-gray-200 font-semibold"><Monitor className="w-4 h-4" /> Windows</div>
+                        <span className="text-[10px] uppercase tracking-wide text-yellow-300">Coming Soon</span>
                       </div>
-                      <p className="text-xs text-blue-100/80 mt-2">Desktop installer package for Windows machines.</p>
-                      <button onClick={() => triggerPlatformDownload('Windows', '.exe')} className="mt-3 w-full px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium">
-                        Download .exe
-                      </button>
+                      <p className="text-xs text-gray-400 mt-2">Desktop build for Windows will be available later.</p>
                     </div>
 
                     <div className="rounded-xl border border-gray-700 bg-[#0d1117] p-4">
@@ -2690,7 +3554,7 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
 
                     <div className="rounded-xl border border-gray-700 bg-[#0d1117] p-4">
                       <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2 text-gray-200 font-semibold"><Linux className="w-4 h-4" /> Ubuntu</div>
+                        <div className="flex items-center gap-2 text-gray-200 font-semibold"><Terminal className="w-4 h-4" /> Ubuntu</div>
                         <span className="text-[10px] uppercase tracking-wide text-yellow-300">Coming Soon</span>
                       </div>
                       <p className="text-xs text-gray-400 mt-2">Ubuntu .deb package pipeline is in progress.</p>
@@ -2708,6 +3572,247 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
               )}
             </div>
           </div>
+          {terminalPanel}
+          </>
+        ) : (
+          <>
+            {/* Editor Top Bar */}
+            <div className="h-11 bg-[#161b22] border-b border-gray-800 flex items-center px-2 gap-1 flex-shrink-0">
+              <button
+                onClick={() => setSidebarOpen(prev => !prev)}
+                className="p-1.5 hover:bg-gray-800 rounded text-gray-400 hover:text-white md:hidden"
+                title="Toggle Sidebar"
+              >
+                <Menu className="w-5 h-5" />
+              </button>
+              <div className="hidden md:flex items-center gap-1">
+                {['File', 'Edit', 'View', 'Run'].map(menu => (
+                  <div key={menu} className="relative">
+                    <button
+                      onClick={() => setActiveTopMenu(prev => (prev === menu ? null : menu))}
+                      className={cn(
+                        "px-2 py-1 rounded text-[12px]",
+                        activeTopMenu === menu ? "bg-[#21262d] text-white" : "text-gray-400 hover:text-white hover:bg-[#1c2129]"
+                      )}
+                    >
+                      {menu}
+                    </button>
+                    {activeTopMenu === menu && (
+                      <div className="absolute left-0 top-full mt-1 w-56 bg-[#161b22] border border-gray-700 rounded-md shadow-xl z-50 p-1">
+                        {menu === 'File' && (
+                          <>
+                            <MenuItem label="New File" hint="Ctrl+N" onClick={runMenuAction(createFile)} />
+                            <MenuItem label="Save" hint="Ctrl+S" onClick={runMenuAction(requestSave)} disabled={!activeFile} />
+                            <MenuItem label="Save to Phone (Downloads)" onClick={runMenuAction(() => { void saveToDevice(); })} disabled={!activeFile} />
+                            <MenuItem label="Rename File" onClick={runMenuAction(() => renameFile())} disabled={!activeFile} />
+                            <MenuItem label="Delete File" onClick={runMenuAction(() => deleteFile())} disabled={!activeFile} />
+                            <MenuItem label="Import Files" onClick={runMenuAction(triggerImportFiles)} />
+                            <MenuItem label="Import Folder" onClick={runMenuAction(triggerImportFolder)} />
+                            <MenuItem label="Close Project" onClick={runMenuAction(() => setActiveProject(null))} />
+                          </>
+                        )}
+                        {menu === 'Edit' && (
+                          <>
+                            <MenuItem label="Select All" onClick={runMenuAction(selectAllInEditor)} disabled={!activeFile} />
+                            <MenuItem label="Format Document" hint="Shift+Alt+F" onClick={runMenuAction(formatDocument)} disabled={!activeFile} />
+                            <MenuItem label="Insert Boilerplate" hint="Ctrl+Shift+B" onClick={runMenuAction(openBoilerplatePicker)} disabled={!activeFile} />
+                            <MenuItem label="Search in Project" hint="Ctrl+Shift+F" onClick={runMenuAction(openSearchView)} />
+                          </>
+                        )}
+                        {menu === 'View' && (
+                          <>
+                            <MenuItem label="Command Palette" hint="Ctrl+Shift+P" onClick={runMenuAction(openCommandPalette)} />
+                            <MenuItem label="Toggle Terminal" onClick={runMenuAction(toggleTerminalPanel)} />
+                            <MenuItem label="Extensions" onClick={runMenuAction(openExtensionsPanel)} />
+                            <MenuItem label="Settings" hint="Ctrl+," onClick={runMenuAction(openSettingsPanel)} />
+                            <MenuItem label="New Window" onClick={runMenuAction(openNewWindow)} />
+                          </>
+                        )}
+                        {menu === 'Run' && (
+                          <>
+                            <MenuItem label="Run Active File" onClick={runMenuAction(handleRun)} disabled={!activeFile} />
+                            <MenuItem label="AI Analyze" onClick={runMenuAction(handleAnalyze)} disabled={!activeFile} />
+                            <MenuItem label="Shell: ls" onClick={runMenuAction(() => runShellPreset('ls'))} />
+                            <MenuItem label="Shell: pwd" onClick={runMenuAction(() => runShellPreset('pwd'))} />
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <div className="flex-1 min-w-0 text-center text-xs text-gray-500 truncate px-2">
+                {activeProject.name}{activeFile ? ` — ${activeFile.path}` : ''}
+              </div>
+              <button onClick={handleRun} disabled={!activeFile} title="Run" className="p-1.5 hover:bg-gray-800 rounded text-green-400 disabled:opacity-40">
+                <Play className="w-4 h-4" />
+              </button>
+              <button onClick={requestSave} disabled={!activeFile || isSaving} title="Save" className="p-1.5 hover:bg-gray-800 rounded text-blue-400 disabled:opacity-40">
+                <Save className="w-4 h-4" />
+              </button>
+              <button onClick={() => setAiChatOpen(true)} title="AI Chat" className="p-1.5 hover:bg-gray-800 rounded text-purple-400 hover:text-white">
+                <Bot className="w-4 h-4" />
+              </button>
+              <div className="relative">
+                <button
+                  onClick={() => setActiveToolbarMenu(prev => (prev === 'editor' ? null : 'editor'))}
+                  title="Editor Options"
+                  className={cn("p-1.5 hover:bg-gray-800 rounded", activeToolbarMenu === 'editor' ? "text-white bg-gray-800" : "text-gray-400")}
+                >
+                  <Pencil className="w-4 h-4" />
+                </button>
+                {activeToolbarMenu === 'editor' && (
+                  <div className="absolute right-0 top-full mt-1 w-56 bg-[#161b22] border border-gray-700 rounded-md shadow-xl z-50 p-1">
+                    <MenuItem
+                      label={ideSettings.wordWrap ? 'Disable Word Wrap' : 'Enable Word Wrap'}
+                      onClick={() => { setIdeSettings(prev => ({ ...prev, wordWrap: !prev.wordWrap })); setActiveToolbarMenu(null); }}
+                    />
+                    <MenuItem label="Format Document" hint="Shift+Alt+F" onClick={() => { formatDocument(); setActiveToolbarMenu(null); }} disabled={!activeFile} />
+                    <MenuItem label="Select All" onClick={() => { selectAllInEditor(); setActiveToolbarMenu(null); }} disabled={!activeFile} />
+                    <MenuItem label="Insert Boilerplate" hint="Ctrl+Shift+B" onClick={() => { openBoilerplatePicker(); setActiveToolbarMenu(null); }} disabled={!activeFile} />
+                    <MenuItem label="Rename File" onClick={() => { renameFile(); setActiveToolbarMenu(null); }} disabled={!activeFile} />
+                    <MenuItem
+                      label="Increase Font Size"
+                      onClick={() => setIdeSettings(prev => ({ ...prev, editorFontSize: Math.min(22, prev.editorFontSize + 1) }))}
+                    />
+                    <MenuItem
+                      label="Decrease Font Size"
+                      onClick={() => setIdeSettings(prev => ({ ...prev, editorFontSize: Math.max(12, prev.editorFontSize - 1) }))}
+                    />
+                  </div>
+                )}
+              </div>
+              <div className="relative">
+                <button
+                  onClick={() => setActiveToolbarMenu(prev => (prev === 'more' ? null : 'more'))}
+                  title="More Tools"
+                  className={cn("p-1.5 hover:bg-gray-800 rounded", activeToolbarMenu === 'more' ? "text-white bg-gray-800" : "text-gray-400")}
+                >
+                  <MoreVertical className="w-4 h-4" />
+                </button>
+                {activeToolbarMenu === 'more' && (
+                  <div className="absolute right-0 top-full mt-1 w-56 bg-[#161b22] border border-gray-700 rounded-md shadow-xl z-50 p-1">
+                    <MenuItem
+                      label={terminalOpen ? 'Hide Terminal' : 'Show Terminal'}
+                      onClick={() => { toggleTerminalPanel(); setActiveToolbarMenu(null); }}
+                    />
+                    <MenuItem
+                      label="Open Console"
+                      onClick={() => { setTerminalOpen(true); setTerminalMode('console'); setActiveToolbarMenu(null); }}
+                    />
+                    <MenuItem
+                      label="Open Alpine Shell"
+                      onClick={() => { setTerminalOpen(true); setTerminalMode('shell'); setActiveToolbarMenu(null); }}
+                    />
+                    <MenuItem label="AI Analyze (Debug)" onClick={() => { handleAnalyze(); setActiveToolbarMenu(null); }} disabled={!activeFile || isAnalyzing} />
+                    <MenuItem label="AI Complete" onClick={() => { handleAiCompletion(); setActiveToolbarMenu(null); }} disabled={!activeFile} />
+                    <MenuItem label="Command Palette" hint="Ctrl+Shift+P" onClick={() => { openCommandPalette(); setActiveToolbarMenu(null); }} />
+                    <MenuItem label="Extensions" onClick={() => { openExtensionsPanel(); setActiveToolbarMenu(null); }} />
+                    <MenuItem label="Settings" hint="Ctrl+," onClick={() => { openSettingsPanel(); setActiveToolbarMenu(null); }} />
+                    {!IS_NATIVE_APP && (
+                      <MenuItem label="New Window" onClick={() => { openNewWindow(); setActiveToolbarMenu(null); }} />
+                    )}
+                    <MenuItem label="Switch Project" onClick={() => { setActiveProject(null); setActiveToolbarMenu(null); }} />
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Open File Tabs */}
+            {openFiles.length > 0 && (
+              <div className="flex items-center bg-[#0d1117] border-b border-gray-800 overflow-x-auto flex-shrink-0">
+                {openFiles.map(file => (
+                  <div
+                    key={file.id}
+                    onClick={() => openFile(file)}
+                    className={cn(
+                      "group flex items-center gap-2 px-3 py-2 text-xs border-r border-gray-800 cursor-pointer whitespace-nowrap",
+                      activeFile?.id === file.id
+                        ? "bg-[#161b22] text-white border-t-2 border-t-blue-500"
+                        : "text-gray-400 hover:bg-[#161b22]/60"
+                    )}
+                  >
+                    <FileIcon fileName={file.path} />
+                    <span>{file.path}</span>
+                    {draftByFileId[file.id] !== undefined && (
+                      <span className="w-2 h-2 rounded-full bg-blue-400" />
+                    )}
+                    <button
+                      onClick={(e) => { e.stopPropagation(); closeFileTab(file.id); }}
+                      className="p-0.5 rounded hover:bg-gray-700 opacity-60 group-hover:opacity-100"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Editor / Preview */}
+            <div className="flex-1 min-h-0 overflow-hidden relative" onClick={() => { setActiveTopMenu(null); setActiveToolbarMenu(null); }}>
+              {previewMode && previewDocument !== null ? (
+                <div className="absolute inset-0 flex flex-col bg-white">
+                  <div className="flex items-center justify-between px-3 py-1.5 bg-[#161b22] border-b border-gray-800">
+                    <span className="text-xs text-gray-400">Preview</span>
+                    <button onClick={() => setPreviewMode(false)} className="p-1 text-gray-400 hover:text-white">
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                  <iframe title="Preview" srcDoc={previewDocument} className="flex-1 w-full bg-white" sandbox="allow-scripts" />
+                </div>
+              ) : activeFile ? (
+                <CodeMirror
+                  ref={editorRef}
+                  value={code}
+                  height="100%"
+                  style={{ height: '100%', fontSize: `${ideSettings.editorFontSize}px` }}
+                  theme={ideSettings.editorTheme === 'vscode-light' ? vscodeLight : vscodeDark}
+                  extensions={getLanguageExtension(getPathLanguage(activeFile.path) || activeLanguage)}
+                  onChange={handleEditorChange}
+                />
+              ) : (
+                <div className="h-full flex flex-col items-center justify-center text-gray-600 gap-3">
+                  <Code2 className="w-12 h-12" />
+                  <p className="text-sm">Open a file from the explorer to start editing.</p>
+                  <button onClick={createFile} className="px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white text-sm">
+                    New File
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Mobile Quick Symbols */}
+            {activeFile && !previewMode && (
+              <div className="flex md:hidden items-center gap-1 px-2 py-1 bg-[#161b22] border-t border-gray-800 overflow-x-auto flex-shrink-0">
+                {['{', '}', '(', ')', '[', ']', ';', ':', '=', '<', '>', '"', "'", '`', '!', 'Tab'].map(char => (
+                  <button
+                    key={char}
+                    onClick={() => insertChar(char === 'Tab' ? '  ' : char)}
+                    className="px-2.5 py-1 rounded bg-[#21262d] text-gray-300 text-sm font-mono flex-shrink-0"
+                  >
+                    {char}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Terminal Panel */}
+            {terminalPanel}
+
+            {/* Status Bar */}
+            <div className="h-6 flex items-center justify-between px-3 text-[11px] text-white flex-shrink-0" style={{ backgroundColor: statusBarColor }}>
+              <div className="flex items-center gap-3">
+                <span className="capitalize">{activeLanguage}</span>
+                {activeFile && <span className="truncate max-w-[40vw]">{activeFile.path}</span>}
+              </div>
+              <div className="flex items-center gap-3">
+                {isSaving ? <span>Saving...</span> : hasUnsavedChanges ? <span>Unsaved changes</span> : <span>Saved</span>}
+                <button onClick={toggleTerminalPanel} className="flex items-center gap-1">
+                  <Terminal className="w-3 h-3" /> Terminal
+                </button>
+              </div>
+            </div>
+          </>
         )}
         {/* AI Chat Overlay */}
         <AnimatePresence>

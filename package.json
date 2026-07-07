@@ -3,22 +3,18 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "main": "electron/main.cjs",
   "scripts": {
     "dev": "tsx server.ts",
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
-    "desktop:build:win": "electron-builder --win nsis --publish never",
-    "desktop:build:linux": "electron-builder --linux AppImage --publish never",
-    "desktop:build:mac": "electron-builder --mac dmg --publish never",
     "cap:add:android": "npx cap add android",
-    "cap:add:ios": "npx cap add ios",
     "cap:sync:android": "npx cap sync android",
-    "cap:sync:ios": "npx cap sync ios"
+    "android:apk": "npm run build && npm run cap:sync:android && cd android && ./gradlew assembleDebug"
   },
   "dependencies": {
+    "@capacitor/core": "^7.3.0",
     "@codemirror/lang-angular": "^0.1.4",
     "@codemirror/lang-cpp": "^6.0.3",
     "@codemirror/lang-css": "^6.3.1",
@@ -40,6 +36,7 @@
     "@codemirror/lang-xml": "^6.1.0",
     "@codemirror/lang-yaml": "^6.1.2",
     "@codemirror/lint": "^6.9.4",
+    "@codemirror/view": "^6.43.6",
     "@google/genai": "^1.29.0",
     "@tailwindcss/vite": "^4.1.14",
     "@uiw/codemirror-theme-vscode": "^4.25.5",
@@ -54,35 +51,20 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "tailwind-merge": "^3.5.0",
+    "velo-terminal": "file:plugins/velo-terminal",
     "vite": "^6.2.0",
     "ws": "^8.19.0"
   },
   "devDependencies": {
     "@capacitor/android": "^7.3.0",
     "@capacitor/cli": "^7.3.0",
-    "@capacitor/core": "^7.3.0",
-    "@capacitor/ios": "^7.3.0",
     "@types/express": "^4.17.21",
     "@types/node": "^22.14.0",
     "@types/ws": "^8.18.1",
     "autoprefixer": "^10.4.21",
-    "electron": "^37.3.1",
-    "electron-builder": "^26.0.12",
     "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",
     "typescript": "~5.8.2",
     "vite": "^6.2.0"
-  },
-  "build": {
-    "appId": "com.velocode.ide",
-    "productName": "Velo Code IDE",
-    "directories": {
-      "output": "release"
-    },
-    "files": [
-      "dist/**/*",
-      "electron/**/*",
-      "package.json"
-    ]
   }
 }

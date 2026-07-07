@@ -8,6 +8,8 @@ export interface ExtensionCatalogEntry {
   downloadPath: string;
   runnerMode?: 'browser' | 'server' | 'none';
   languages?: string[];
+  /** Real packages installed via `apk add` inside Alpine when running as the Android app. */
+  alpinePackages?: string[];
 }
 
 export interface ExtensionStateEntry {
