@@ -145,14 +145,14 @@ public final class TarGzExtractor {
         }
     }
 
-    private static File safeResolve(File destDir, String name) throws IOException {
+    private static File safeResolve(File destDir, String name) {
         if (name == null || name.isEmpty()) return null;
+        // Compare absolute (non-canonical) paths on both sides: on Android the
+        // files dir itself sits behind a symlink (/data/user/0 -> /data/data),
+        // so canonicalizing only one side rejects every entry.
         File target = new File(destDir, name);
-        String canonicalDest = destDir.getCanonicalPath();
-        // Use path (not canonical) for the child so symlinked parents inside the
-        // rootfs do not falsely trigger, but reject obvious traversal.
-        String normalized = target.getAbsolutePath();
-        if (!normalized.startsWith(canonicalDest) || name.contains("..")) {
+        String dest = destDir.getAbsolutePath();
+        if (!target.getAbsolutePath().startsWith(dest) || name.contains("..")) {
             return null;
         }
         return target;

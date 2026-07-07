@@ -109,6 +109,10 @@ public final class AlpineInstaller {
                 throw e;
             }
 
+            if (!isInstalled()) {
+                throw new IOException("Extraction produced no shell (bin/busybox missing in " + rootfs + ")");
+            }
+
             progress.report("configuring", "Configuring DNS and profile", -1);
             configureRootfs(rootfs);
 
