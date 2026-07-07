@@ -1,5 +1,5 @@
 import { Capacitor } from '@capacitor/core';
-import { ensureAlpineReady, startTerminalJob, pollTerminalJob, removeTerminalJob } from './terminalBridge';
+import { getTerminalStatus, startTerminalJob, pollTerminalJob, removeTerminalJob } from './terminalBridge';
 
 /**
  * On-device API layer for the Android APK.
@@ -81,19 +81,25 @@ const jsonResponse = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 
 /** Runtimes runnable inside Alpine, with the busybox/apk command + install hint. */
-const ALPINE_RUNNERS: Record<string, { ext: string; run: string; pkg: string | null }> = {
+const ALPINE_RUNNERS: Record<string, { ext: string; run: string; pkg: string | null; template?: string }> = {
   shell: { ext: 'sh', run: 'sh', pkg: null },
   javascript: { ext: 'js', run: 'node', pkg: 'nodejs' },
   typescript: { ext: 'ts', run: 'npx --yes tsx', pkg: 'nodejs npm' },
   python: { ext: 'py', run: 'python3', pkg: 'python3' },
-  php: { ext: 'php', run: 'php', pkg: 'php' },
+  php: { ext: 'php', run: 'php83', pkg: 'php83' },
   ruby: { ext: 'rb', run: 'ruby', pkg: 'ruby' },
+  c: { ext: 'c', run: 'gcc', pkg: 'build-base', template: 'gcc {file} -o /tmp/velo-run-bin && /tmp/velo-run-bin' },
+  cpp: { ext: 'cpp', run: 'g++', pkg: 'build-base', template: 'g++ {file} -o /tmp/velo-run-bin && /tmp/velo-run-bin' },
+  go: { ext: 'go', run: 'go', pkg: 'go', template: 'cd /tmp && go run {file}' },
+  rust: { ext: 'rs', run: 'rustc', pkg: 'rust', template: 'rustc {file} -o /tmp/velo-run-bin && /tmp/velo-run-bin' },
+  java: { ext: 'java', run: 'java', pkg: 'openjdk21', template: 'mkdir -p /tmp/velo-java && cp {file} /tmp/velo-java/Main.java && java /tmp/velo-java/Main.java' },
 };
 
 const EXT_LANGUAGE: Record<string, string> = {
   js: 'javascript', mjs: 'javascript', cjs: 'javascript',
   ts: 'typescript', py: 'python', sh: 'shell', bash: 'shell',
   php: 'php', rb: 'ruby', html: 'html', htm: 'html',
+  c: 'c', cpp: 'cpp', cc: 'cpp', cxx: 'cpp', go: 'go', rs: 'rust', java: 'java',
   css: 'css', json: 'json', md: 'markdown', yaml: 'yaml', yml: 'yaml',
 };
 
@@ -112,19 +118,28 @@ async function runInAlpine(code: string, language: string): Promise<string[]> {
     ];
   }
 
-  const output: string[] = [];
-  await ensureAlpineReady(line => output.push(line));
+  const status = await getTerminalStatus();
+  if (status && status.prootAvailable && !status.alpineInstalled) {
+    return [
+      'Alpine Linux terminal is not installed yet.',
+      'Open Terminal \u2192 Alpine Shell and tap "Install Alpine" (one-time download, works offline afterwards).',
+    ];
+  }
 
+  const output: string[] = [];
   const scriptPath = `/tmp/velo-run.${runner.ext}`;
   const heredoc = `cat > ${scriptPath} <<'VELO_RUN_EOF'\n${code}\nVELO_RUN_EOF`;
   const check = runner.pkg
     ? `command -v ${runner.run.split(' ')[0]} >/dev/null 2>&1 || { echo "Error: '${runner.run.split(' ')[0]}' not installed. Run: apk add ${runner.pkg}"; exit 127; }`
     : 'true';
-  const command = `${heredoc}\n${check} && ${runner.run} ${scriptPath}`;
+  const runCmd = runner.template
+    ? runner.template.split('{file}').join(scriptPath)
+    : `${runner.run} ${scriptPath}`;
+  const command = `${heredoc}\n${check} && ${runCmd}`;
 
   const jobId = await startTerminalJob(command);
   const startedAt = Date.now();
-  // Poll until the job finishes (30s cap).
+  // Poll until the job finishes (120s cap; compiles can be slow).
   for (;;) {
     const state = await pollTerminalJob(jobId);
     if (!state) break;
@@ -134,8 +149,8 @@ async function runInAlpine(code: string, language: string): Promise<string[]> {
       removeTerminalJob(jobId).catch(() => undefined);
       break;
     }
-    if (Date.now() - startedAt > 30_000) {
-      output.push('Error: execution timed out after 30s.');
+    if (Date.now() - startedAt > 120_000) {
+      output.push('Error: execution timed out after 120s.');
       removeTerminalJob(jobId).catch(() => undefined);
       break;
     }
@@ -428,7 +443,8 @@ Return ONLY valid JSON with this exact schema:
     {"type":"update_file","path":"path.ext","content":"FULL FILE CONTENT"},
     {"type":"rename_file","path":"old.ext","newPath":"new.ext"},
     {"type":"delete_file","path":"path.ext"},
-    {"type":"open_file","path":"path.ext"}
+    {"type":"open_file","path":"path.ext"},
+    {"type":"run_command","command":"apk add python3"}
   ]
 }
 
@@ -438,6 +454,7 @@ Rules:
 - Use FULL file content in create/update actions (not patch/diff).
 - Keep paths relative (no absolute paths).
 - Prefer minimal number of actions.
+- run_command executes in the device's Alpine Linux shell (busybox + apk). Use it to install packages, run scripts, or inspect the workspace. Max 3 run_command actions, each finishing within a few minutes, non-interactive (no prompts; use flags like --yes).
 
 Project:
 - name: ${typeof project?.name === 'string' ? project.name : 'Project'}

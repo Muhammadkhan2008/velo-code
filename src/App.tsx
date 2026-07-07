@@ -31,12 +31,15 @@ import {
   Trash2
 } from 'lucide-react';
 import {
-  ensureAlpineReady,
+  getTerminalStatus,
+  installAlpine,
+  runTerminalCommand,
   startTerminalJob,
   pollTerminalJob,
   stopTerminalJob,
   removeTerminalJob,
 } from './lib/terminalBridge';
+import type { TerminalStatus } from 'velo-terminal';
 import CodeMirror, { ReactCodeMirrorRef } from '@uiw/react-codemirror';
 import { javascript } from '@codemirror/lang-javascript';
 import { python } from '@codemirror/lang-python';
@@ -95,7 +98,8 @@ type AgentAction =
   | { type: 'update_file'; path: string; content: string }
   | { type: 'rename_file'; path: string; newPath: string }
   | { type: 'delete_file'; path: string }
-  | { type: 'open_file'; path: string };
+  | { type: 'open_file'; path: string }
+  | { type: 'run_command'; command: string };
 
 interface BoilerplateSnippet {
   id: string;
@@ -255,6 +259,10 @@ export default function App() {
   const [isShellRunning, setIsShellRunning] = useState(false);
   const [shellHistory, setShellHistory] = useState<string[]>([]);
   const [shellHistoryIndex, setShellHistoryIndex] = useState<number>(-1);
+  const [alpineStatus, setAlpineStatus] = useState<TerminalStatus | null>(null);
+  const [isAlpineSetupOpen, setIsAlpineSetupOpen] = useState(false);
+  const [isAlpineInstalling, setIsAlpineInstalling] = useState(false);
+  const [pendingShellCommand, setPendingShellCommand] = useState<string | null>(null);
   const [aiChatOpen, setAiChatOpen] = useState(false);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
   const [commandQuery, setCommandQuery] = useState('');
@@ -294,6 +302,18 @@ export default function App() {
   const editorRef = useRef<ReactCodeMirrorRef>(null);
   const importFolderInputRef = useRef<HTMLInputElement | null>(null);
   const importFilesInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (!IS_NATIVE_APP) return;
+    getTerminalStatus()
+      .then(status => {
+        setAlpineStatus(status);
+        if (status && status.prootAvailable && !status.alpineInstalled && !status.installing) {
+          setIsAlpineSetupOpen(true);
+        }
+      })
+      .catch(() => undefined);
+  }, []);
 
   const getEffectiveContent = (file: File) => draftByFileId[file.id] ?? file.content;
 
@@ -466,6 +486,25 @@ export default function App() {
         throw new Error(`Failed to download ${manifest.name}`);
       }
       await res.text();
+
+      if (IS_NATIVE_APP && manifest.alpinePackages && manifest.alpinePackages.length > 0) {
+        const status = await refreshAlpineStatus();
+        if (alpineNeedsInstall(status)) {
+          setIsAlpineSetupOpen(true);
+          window.alert(`${manifest.name} needs the Alpine Linux terminal. Install Alpine first (one-time download), then install this extension again.`);
+          return;
+        }
+        const installCmd = `apk update && apk add ${manifest.alpinePackages.join(' ')}`;
+        setTerminalOpen(true);
+        setTerminalMode('shell');
+        appendShellLine(`[extension] Installing packages for ${manifest.name}...`);
+        const { code: exitCode } = await runTerminalCommand(installCmd, appendShellLine, 600_000);
+        if (exitCode !== 0) {
+          throw new Error(`Package install failed (exit ${exitCode ?? 'unknown'}). See the Alpine Shell output.`);
+        }
+        appendShellLine(`[extension] ${manifest.name} packages installed.`);
+      }
+
       setExtensionsState(prev => ({
         ...prev,
         [extensionId]: {
@@ -1141,10 +1180,43 @@ export default function App() {
     const errors: string[] = [];
     let focusPath = activeFile?.path || '';
 
+    let commandsRun = 0;
+
     for (const action of actions) {
       try {
         if (action.type === 'open_file') {
           focusPath = action.path;
+          continue;
+        }
+
+        if (action.type === 'run_command') {
+          if (commandsRun >= 3) {
+            errors.push(`Command skipped (max 3 per request): ${action.command}`);
+            continue;
+          }
+          commandsRun += 1;
+
+          if (IS_NATIVE_APP) {
+            const status = await refreshAlpineStatus();
+            if (alpineNeedsInstall(status)) {
+              setIsAlpineSetupOpen(true);
+              errors.push(`Command needs Alpine (not installed yet): ${action.command}`);
+              continue;
+            }
+          }
+
+          setMessages(prev => [...prev, { role: 'ai', text: `Running command:\n$ ${action.command}` }]);
+          setTerminalOpen(true);
+          setTerminalMode('shell');
+          const { output: cmdOutput, code: exitCode } = await runTerminalCommand(action.command, appendShellLine, 180_000);
+          const visible = cmdOutput.filter(line => line !== `$ ${action.command}`);
+          const tail = visible.slice(-12).join('\n').trim() || '(no output)';
+          setMessages(prev => [...prev, { role: 'ai', text: `${tail}\n\n> exit code: ${exitCode ?? 'unknown'}` }]);
+          if (exitCode !== 0) {
+            errors.push(`Command failed (exit ${exitCode ?? 'unknown'}): ${action.command}`);
+          } else {
+            applied += 1;
+          }
           continue;
         }
 
@@ -1296,6 +1368,61 @@ export default function App() {
     }
   };
 
+  const appendShellLine = (line: string) => setShellOutput(prev => [...prev, line]);
+
+  const refreshAlpineStatus = async (): Promise<TerminalStatus | null> => {
+    const status = await getTerminalStatus();
+    setAlpineStatus(status);
+    return status;
+  };
+
+  const alpineNeedsInstall = (status: TerminalStatus | null) =>
+    !!status && status.prootAvailable && !status.alpineInstalled;
+
+  const startAlpineInstall = async (): Promise<boolean> => {
+    if (isAlpineInstalling) return false;
+    setIsAlpineInstalling(true);
+    setTerminalOpen(true);
+    setTerminalMode('shell');
+    try {
+      const status = await installAlpine(appendShellLine);
+      setAlpineStatus(status);
+      if (status?.alpineInstalled) {
+        appendShellLine('[alpine] Installed permanently. Full Linux shell ready (try: apk add python3).');
+        setIsAlpineSetupOpen(false);
+        return true;
+      }
+      appendShellLine('[alpine] Install did not complete. Tap Install to retry.');
+      return false;
+    } catch (error: any) {
+      appendShellLine(`Error: Alpine install failed: ${error.message || error}`);
+      return false;
+    } finally {
+      setIsAlpineInstalling(false);
+    }
+  };
+
+  const confirmAlpineInstall = async () => {
+    const ok = await startAlpineInstall();
+    const pending = pendingShellCommand;
+    setPendingShellCommand(null);
+    if (ok && pending) {
+      await executeShellCommand(pending);
+    }
+  };
+
+  const executeShellCommand = async (command: string) => {
+    try {
+      const jobId = await startTerminalJob(command);
+      setActiveTerminalJobId(jobId);
+      setIsShellRunning(true);
+    } catch (error: any) {
+      setShellOutput(prev => [...prev, `Error: ${error.message || 'Command failed to start'}`]);
+      setIsShellRunning(false);
+      setActiveTerminalJobId(null);
+    }
+  };
+
   const runShellCommand = async () => {
     const command = shellCommand.trim();
     if (!command || isShellRunning) return;
@@ -1307,18 +1434,25 @@ export default function App() {
     setShellHistory(prev => (prev[0] === command ? prev : [command, ...prev].slice(0, 100)));
     setShellHistoryIndex(-1);
 
-    try {
-      await ensureAlpineReady(message => {
-        setShellOutput(prev => [...prev, message]);
-      });
-      const jobId = await startTerminalJob(command);
-      setActiveTerminalJobId(jobId);
-      setIsShellRunning(true);
-    } catch (error: any) {
-      setShellOutput(prev => [...prev, `Error: ${error.message || 'Command failed to start'}`]);
-      setIsShellRunning(false);
-      setActiveTerminalJobId(null);
+    if (IS_NATIVE_APP) {
+      try {
+        const status = await refreshAlpineStatus();
+        if (alpineNeedsInstall(status)) {
+          if (status?.installing || isAlpineInstalling) {
+            appendShellLine('[alpine] Alpine is still installing... command will not run yet.');
+            return;
+          }
+          setPendingShellCommand(command);
+          setIsAlpineSetupOpen(true);
+          appendShellLine('[alpine] Alpine Linux is not installed yet - confirm the one-time download to continue.');
+          return;
+        }
+      } catch {
+        // status check failed; fall through and let the job surface any error
+      }
     }
+
+    await executeShellCommand(command);
   };
 
   const onShellInputKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
@@ -2379,6 +2513,64 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
         )}
       </AnimatePresence>
 
+      {/* Alpine Setup Modal */}
+      <AnimatePresence>
+        {isAlpineSetupOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[62] bg-black/60 backdrop-blur-sm p-4 md:p-8 flex items-center justify-center"
+          >
+            <motion.div
+              initial={{ y: -16, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              exit={{ y: -16, opacity: 0 }}
+              className="max-w-md w-full bg-[#161b22] border border-gray-700 rounded-xl shadow-2xl overflow-hidden"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="p-4 border-b border-gray-800 flex items-center justify-between">
+                <h3 className="text-lg text-white font-semibold">Terminal not installed</h3>
+                {!isAlpineInstalling && (
+                  <button onClick={() => { setIsAlpineSetupOpen(false); setPendingShellCommand(null); }} className="p-1 rounded hover:bg-[#21262d] text-gray-400">
+                    <X className="w-5 h-5" />
+                  </button>
+                )}
+              </div>
+              <div className="p-4 space-y-4">
+                <p className="text-sm text-gray-300">
+                  Velo Code uses a real Alpine Linux terminal for <span className="text-white">apk</span>, compilers and language runtimes.
+                  Download it once (a few MB) and it stays installed permanently — no re-download needed.
+                </p>
+                {isAlpineInstalling ? (
+                  <div className="rounded-lg border border-gray-700 bg-[#0d1117] p-3 text-xs text-gray-400 font-mono max-h-32 overflow-y-auto">
+                    {shellOutput.filter(line => line.startsWith('[alpine]')).slice(-4).map((line, index) => (
+                      <div key={index}>{line}</div>
+                    ))}
+                    <div className="text-blue-400">Installing... keep the app open.</div>
+                  </div>
+                ) : (
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => { void confirmAlpineInstall(); }}
+                      className="flex-1 px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium"
+                    >
+                      Download &amp; Install
+                    </button>
+                    <button
+                      onClick={() => { setIsAlpineSetupOpen(false); setPendingShellCommand(null); }}
+                      className="px-3 py-2 rounded-lg bg-[#21262d] hover:bg-[#30363d] text-gray-300 text-sm"
+                    >
+                      Not now
+                    </button>
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Extensions Modal */}
       <AnimatePresence>
         {isExtensionsOpen && (
@@ -3243,6 +3435,15 @@ Project: ${activeProject?.name || 'none'} (${activeProject?.language || 'text'})
                     </button>
                   </div>
                   <div className="flex items-center gap-1">
+                    {terminalMode === 'shell' && IS_NATIVE_APP && alpineNeedsInstall(alpineStatus) && (
+                      <button
+                        onClick={() => setIsAlpineSetupOpen(true)}
+                        disabled={isAlpineInstalling}
+                        className="px-2 py-1 text-[11px] rounded bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-60"
+                      >
+                        {isAlpineInstalling ? 'Installing...' : 'Install Alpine'}
+                      </button>
+                    )}
                     {terminalMode === 'console' ? (
                       <button onClick={() => setOutput(['> Ready...'])} className="px-2 py-1 text-[11px] text-gray-500 hover:text-white">
                         Clear

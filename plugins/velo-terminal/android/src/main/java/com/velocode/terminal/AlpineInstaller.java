@@ -69,6 +69,12 @@ public final class AlpineInstaller {
                 + "/alpine-minirootfs-" + ALPINE_VERSION + "-" + arch + ".tar.gz";
     }
 
+    /** Persistent tarball cache so a failed install never re-downloads. */
+    private File cachedTarball() {
+        return new File(context.getFilesDir(),
+                "alpine-minirootfs-" + ALPINE_VERSION + "-" + alpineArch() + ".tar.gz");
+    }
+
     /** Blocking. Call from a background thread. */
     public synchronized void install(Progress progress) throws IOException {
         if (isInstalled()) {
@@ -82,27 +88,37 @@ public final class AlpineInstaller {
             throw new IOException("Cannot create rootfs dir: " + rootfs);
         }
 
-        File tarball = new File(context.getCacheDir(), "alpine-minirootfs.tar.gz");
+        File tarball = cachedTarball();
         try {
-            progress.report("downloading", "Downloading Alpine " + ALPINE_VERSION + " (" + alpineArch() + ")", 0);
-            download(downloadUrl(), tarball, progress);
+            if (tarball.exists()) {
+                progress.report("downloading", "Using previously downloaded Alpine " + ALPINE_VERSION, 100);
+            } else {
+                progress.report("downloading", "Downloading Alpine " + ALPINE_VERSION + " (" + alpineArch() + ")", 0);
+                download(downloadUrl(), tarball, progress);
+            }
 
             progress.report("extracting", "Extracting rootfs", -1);
-            TarGzExtractor.extract(tarball, rootfs, (name, bytes) -> {
-                // Entry-level progress; indeterminate percentage.
-            });
+            try {
+                TarGzExtractor.extract(tarball, rootfs, (name, bytes) -> {
+                    // Entry-level progress; indeterminate percentage.
+                });
+            } catch (IOException e) {
+                // Corrupt archive: drop the cache so the next attempt re-downloads.
+                //noinspection ResultOfMethodCallIgnored
+                tarball.delete();
+                throw e;
+            }
 
             progress.report("configuring", "Configuring DNS and profile", -1);
             configureRootfs(rootfs);
 
             progress.report("done", "Alpine Linux ready", 100);
+            //noinspection ResultOfMethodCallIgnored
+            tarball.delete();
         } catch (IOException e) {
             deleteRecursively(rootfs);
             progress.report("error", "Install failed: " + e.getMessage(), -1);
             throw e;
-        } finally {
-            //noinspection ResultOfMethodCallIgnored
-            tarball.delete();
         }
     }
 
@@ -140,6 +156,7 @@ public final class AlpineInstaller {
     }
 
     private void download(String urlString, File dest, Progress progress) throws IOException {
+        File partial = new File(dest.getAbsolutePath() + ".part");
         HttpURLConnection conn = (HttpURLConnection) new URL(urlString).openConnection();
         conn.setConnectTimeout(20000);
         conn.setReadTimeout(60000);
@@ -151,7 +168,7 @@ public final class AlpineInstaller {
             }
             long total = conn.getContentLengthLong();
             try (InputStream in = conn.getInputStream();
-                 OutputStream out = new FileOutputStream(dest)) {
+                 OutputStream out = new FileOutputStream(partial)) {
                 byte[] buf = new byte[65536];
                 long read = 0;
                 int n;
@@ -166,7 +183,17 @@ public final class AlpineInstaller {
                                 (int) (read * 100 / total));
                     }
                 }
+                if (total > 0 && read != total) {
+                    throw new IOException("Download incomplete (" + read + " of " + total + " bytes)");
+                }
             }
+            if (!partial.renameTo(dest)) {
+                throw new IOException("Cannot move download into place: " + dest);
+            }
+        } catch (IOException e) {
+            //noinspection ResultOfMethodCallIgnored
+            partial.delete();
+            throw e;
         } finally {
             conn.disconnect();
         }

@@ -154,6 +154,9 @@ public class VeloTerminalPlugin extends Plugin {
             String id = UUID.randomUUID().toString();
             Job job = new Job(id, process, useAlpine ? "alpine" : "host");
             job.append("$ " + command);
+            if (!useAlpine && !hostShell) {
+                job.append("[warn] Alpine Linux is not installed - running in the basic Android shell (no apk). Install Alpine from the Alpine Shell tab.");
+            }
             jobs.put(id, job);
 
             pump(process.getInputStream(), job, null);
