@@ -133,6 +133,16 @@ const DEFAULT_SETTINGS: IdeSettings = {
   customApiKey: '',
 };
 
+function loadStoredState<T extends object>(key: string, defaults: T): T {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (raw) return { ...defaults, ...(JSON.parse(raw) as Partial<T>) };
+  } catch {
+    // ignore corrupted local state
+  }
+  return defaults;
+}
+
 const IS_NATIVE_APP = Capacitor.isNativePlatform();
 
 const LANGUAGE_OPTIONS = [
@@ -261,8 +271,8 @@ export default function App() {
   const [globalSearchQuery, setGlobalSearchQuery] = useState('');
   const [replaceValue, setReplaceValue] = useState('');
   const [isReplacingAll, setIsReplacingAll] = useState(false);
-  const [ideSettings, setIdeSettings] = useState<IdeSettings>(DEFAULT_SETTINGS);
-  const [extensionsState, setExtensionsState] = useState<ExtensionStateMap>(DEFAULT_EXTENSION_STATE);
+  const [ideSettings, setIdeSettings] = useState<IdeSettings>(() => loadStoredState('velo.ide.settings', DEFAULT_SETTINGS));
+  const [extensionsState, setExtensionsState] = useState<ExtensionStateMap>(() => loadStoredState('velo.ide.extensions', DEFAULT_EXTENSION_STATE));
   const [downloadingExtensionIds, setDownloadingExtensionIds] = useState<string[]>([]);
   const [code, setCode] = useState('');
   const [output, setOutput] = useState<string[]>(['> Ready...']);
@@ -569,23 +579,6 @@ export default function App() {
       setSidebarOpen(true);
     }
   };
-
-  useEffect(() => {
-    try {
-      const rawSettings = window.localStorage.getItem('velo.ide.settings');
-      if (rawSettings) {
-        const parsed = JSON.parse(rawSettings) as Partial<IdeSettings>;
-        setIdeSettings(prev => ({ ...prev, ...parsed }));
-      }
-      const rawExtensions = window.localStorage.getItem('velo.ide.extensions');
-      if (rawExtensions) {
-        const parsed = JSON.parse(rawExtensions) as ExtensionStateMap;
-        setExtensionsState(prev => ({ ...prev, ...parsed }));
-      }
-    } catch {
-      // ignore corrupted local state
-    }
-  }, []);
 
   useEffect(() => {
     window.localStorage.setItem('velo.ide.settings', JSON.stringify(ideSettings));
